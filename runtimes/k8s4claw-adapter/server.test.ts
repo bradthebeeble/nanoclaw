@@ -1,8 +1,8 @@
 /**
  * server.ts — UDS framing unit tests.
  *
- * Uses in-memory PassThrough streams (not real UDS sockets) for fast,
- * platform-independent CI runs.
+ * Uses in-memory EventEmitter-based mock sockets (not real UDS sockets)
+ * for fast, platform-independent CI runs.
  *
  * Test matrix:
  *  1. Single complete frame decodes correctly
@@ -13,7 +13,7 @@
  *  6. writeFrame round-trip: what we write, we can read back
  */
 import { describe, it, expect, vi } from 'vitest';
-import { PassThrough } from 'stream';
+import { EventEmitter } from 'events';
 import { readFrames, writeFrame } from './server.js';
 import type { IpcMessage } from './types.js';
 
@@ -31,18 +31,50 @@ function makeFrame(json: string): Buffer {
 }
 
 /**
- * A pair of PassThrough streams wired together so writes to `client` appear
- * as reads on `server` and vice-versa — simulates a socket pair without
- * actually opening a UDS descriptor.
+ * Minimal mock socket.
+ *
+ * - emit('data', chunk) feeds bytes into readFrames' buffer.
+ * - write(chunk) captures bytes written by writeFrame (for round-trip test).
+ * - destroy(err?) marks the socket as destroyed.
+ *
+ * This avoids the circular-pipe problem: readFrames only reads from the
+ * socket (via 'data' events), so there is no feedback path.
  */
-function makePair(): { client: PassThrough; server: PassThrough } {
-  const client = new PassThrough();
-  const server = new PassThrough();
-  // Route client→server and server→client
-  client.on('data', (chunk: Buffer) => server.push(chunk));
-  server.on('data', (chunk: Buffer) => client.push(chunk));
-  return { client, server };
+function makeMockSocket() {
+  const ee = new EventEmitter();
+  const writtenChunks: Buffer[] = [];
+  let destroyed = false;
+  let destroyError: Error | undefined;
+
+  const socket = {
+    on: ee.on.bind(ee),
+    emit: ee.emit.bind(ee),
+    write(chunk: Buffer | string): void {
+      writtenChunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    },
+    destroy(err?: Error): void {
+      destroyed = true;
+      destroyError = err;
+    },
+    get destroyed(): boolean {
+      return destroyed;
+    },
+    get destroyError(): Error | undefined {
+      return destroyError;
+    },
+    // Expose collected writes for assertions.
+    get written(): Buffer[] {
+      return writtenChunks;
+    },
+    get writtenConcat(): Buffer {
+      return Buffer.concat(writtenChunks);
+    },
+  };
+
+  return socket;
 }
+
+type MockSocket = ReturnType<typeof makeMockSocket>;
 
 /** Wait one event-loop turn so 'data' event handlers fire. */
 function tick(): Promise<void> {
@@ -55,17 +87,17 @@ function tick(): Promise<void> {
 
 describe('readFrames', () => {
   it('decodes a single complete frame', async () => {
-    const { client, server } = makePair();
+    const socket = makeMockSocket();
     const onMessage = vi.fn<[IpcMessage], void>();
 
-    readFrames(server as unknown as import('net').Socket, onMessage);
+    readFrames(socket as unknown as import('net').Socket, onMessage);
 
     const json = JSON.stringify({
       id: 'a',
       type: 'message',
       timestamp: '2026-05-06T00:00:00Z',
     });
-    client.write(makeFrame(json));
+    socket.emit('data', makeFrame(json));
     await tick();
 
     expect(onMessage).toHaveBeenCalledOnce();
@@ -75,10 +107,10 @@ describe('readFrames', () => {
   });
 
   it('buffers partial frames until complete', async () => {
-    const { client, server } = makePair();
+    const socket = makeMockSocket();
     const onMessage = vi.fn<[IpcMessage], void>();
 
-    readFrames(server as unknown as import('net').Socket, onMessage);
+    readFrames(socket as unknown as import('net').Socket, onMessage);
 
     const json = JSON.stringify({
       id: 'b',
@@ -88,18 +120,18 @@ describe('readFrames', () => {
     const frame = makeFrame(json);
 
     // Write 4-byte header alone
-    client.write(frame.subarray(0, 4));
+    socket.emit('data', frame.subarray(0, 4));
     await tick();
     expect(onMessage).not.toHaveBeenCalled();
 
     // Write first half of body
     const mid = 4 + Math.floor(json.length / 2);
-    client.write(frame.subarray(4, mid));
+    socket.emit('data', frame.subarray(4, mid));
     await tick();
     expect(onMessage).not.toHaveBeenCalled();
 
     // Write remaining bytes
-    client.write(frame.subarray(mid));
+    socket.emit('data', frame.subarray(mid));
     await tick();
 
     expect(onMessage).toHaveBeenCalledOnce();
@@ -107,27 +139,26 @@ describe('readFrames', () => {
   });
 
   it('rejects oversize frame (>16 MiB) by destroying the socket', async () => {
-    const { client, server } = makePair();
+    const socket = makeMockSocket();
     const onMessage = vi.fn<[IpcMessage], void>();
-    const destroySpy = vi.spyOn(server, 'destroy');
 
-    readFrames(server as unknown as import('net').Socket, onMessage);
+    readFrames(socket as unknown as import('net').Socket, onMessage);
 
     // Write 0xFFFFFFFF as length — well above 16 MiB
     const oversizeHeader = Buffer.alloc(4);
     oversizeHeader.writeUInt32BE(0xffffffff, 0);
-    client.write(oversizeHeader);
+    socket.emit('data', oversizeHeader);
     await tick();
 
-    expect(destroySpy).toHaveBeenCalledOnce();
+    expect(socket.destroyed).toBe(true);
     expect(onMessage).not.toHaveBeenCalled();
   });
 
   it('handles two back-to-back frames in one chunk', async () => {
-    const { client, server } = makePair();
+    const socket = makeMockSocket();
     const onMessage = vi.fn<[IpcMessage], void>();
 
-    readFrames(server as unknown as import('net').Socket, onMessage);
+    readFrames(socket as unknown as import('net').Socket, onMessage);
 
     const json1 = JSON.stringify({
       id: 'first',
@@ -140,8 +171,8 @@ describe('readFrames', () => {
       timestamp: '2026-05-06T00:00:01Z',
     });
 
-    // Concatenate both frames and write in one shot
-    client.write(Buffer.concat([makeFrame(json1), makeFrame(json2)]));
+    // Concatenate both frames and emit in one shot
+    socket.emit('data', Buffer.concat([makeFrame(json1), makeFrame(json2)]));
     await tick();
 
     expect(onMessage).toHaveBeenCalledTimes(2);
@@ -150,18 +181,18 @@ describe('readFrames', () => {
   });
 
   it('swallows malformed JSON without crashing', async () => {
-    const { client, server } = makePair();
+    const socket = makeMockSocket();
     const onMessage = vi.fn<[IpcMessage], void>();
 
-    readFrames(server as unknown as import('net').Socket, onMessage);
+    readFrames(socket as unknown as import('net').Socket, onMessage);
 
     const garbage = Buffer.from('not-valid-json!!!', 'utf8');
     const frame = Buffer.alloc(4 + garbage.length);
     frame.writeUInt32BE(garbage.length, 0);
     garbage.copy(frame, 4);
 
-    // Should not throw
-    expect(() => client.write(frame)).not.toThrow();
+    // Should not throw — readFrames catches JSON parse errors internally
+    expect(() => socket.emit('data', frame)).not.toThrow();
     await tick();
 
     expect(onMessage).not.toHaveBeenCalled();
@@ -170,10 +201,14 @@ describe('readFrames', () => {
 
 describe('writeFrame', () => {
   it('round-trip: written bytes decode back to the original message', async () => {
-    const { client, server } = makePair();
+    // For round-trip we use one socket for writing and a separate one for reading
+    const writeSocket = makeMockSocket();
+    const readSocket = makeMockSocket();
     const received: IpcMessage[] = [];
 
-    readFrames(client as unknown as import('net').Socket, (msg) => received.push(msg));
+    readFrames(readSocket as unknown as import('net').Socket, (msg) =>
+      received.push(msg),
+    );
 
     const original: IpcMessage = {
       id: 'round-trip-id',
@@ -184,7 +219,13 @@ describe('writeFrame', () => {
       payload: { hello: 'world' },
     };
 
-    writeFrame(server as unknown as import('net').Socket, original);
+    // Write frame to writeSocket — this captures the bytes in writeSocket.written
+    writeFrame(writeSocket as unknown as import('net').Socket, original);
+
+    // Feed those exact bytes into the readSocket as if they arrived over the wire
+    for (const chunk of writeSocket.written) {
+      readSocket.emit('data', chunk);
+    }
     await tick();
 
     expect(received).toHaveLength(1);
