@@ -80,6 +80,17 @@ export async function getRunningSessions(): Promise<Session[]> {
   return all<Session>(`SELECT * FROM sessions WHERE container_status IN ('running', 'idle')`);
 }
 
+// Runtime allowlist mirroring the compile-time Pick<Session, …> bound on updateSession.
+// TypeScript's Partial<Pick<...>> is erased at runtime; without this Set, any caller
+// routing untrusted input through updateSession would splice arbitrary keys directly
+// into the UPDATE column list (SQL injection).
+const ALLOWED_SESSION_COLUMNS = new Set<string>([
+  'status',
+  'container_status',
+  'last_active',
+  'agent_provider',
+]);
+
 export async function updateSession(
   id: string,
   updates: Partial<Pick<Session, 'status' | 'container_status' | 'last_active' | 'agent_provider'>>,
@@ -88,6 +99,9 @@ export async function updateSession(
   const values: unknown[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
+    if (!ALLOWED_SESSION_COLUMNS.has(key)) {
+      throw new Error(`updateSession: rejected column "${key}" (not in allowlist)`);
+    }
     if (value !== undefined) {
       fields.push(`${key} = $${values.length + 1}`);
       values.push(value);

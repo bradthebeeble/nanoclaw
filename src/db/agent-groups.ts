@@ -21,6 +21,10 @@ export async function getAllAgentGroups(): Promise<AgentGroup[]> {
   return all<AgentGroup>('SELECT * FROM agent_groups ORDER BY name');
 }
 
+// Runtime allowlist mirroring the compile-time Pick<AgentGroup, …> bound. See sessions.ts
+// updateSession for rationale — TypeScript's Partial<Pick<...>> is erased at runtime.
+const ALLOWED_AGENT_GROUP_COLUMNS = new Set<string>(['name', 'agent_provider']);
+
 export async function updateAgentGroup(
   id: string,
   updates: Partial<Pick<AgentGroup, 'name' | 'agent_provider'>>,
@@ -29,6 +33,9 @@ export async function updateAgentGroup(
   const values: unknown[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
+    if (!ALLOWED_AGENT_GROUP_COLUMNS.has(key)) {
+      throw new Error(`updateAgentGroup: rejected column "${key}" (not in allowlist)`);
+    }
     if (value !== undefined) {
       fields.push(`${key} = $${values.length + 1}`);
       values.push(value);
