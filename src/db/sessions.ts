@@ -111,7 +111,7 @@ export async function deleteSession(id: string): Promise<void> {
  * DO NOTHING that would throw UNIQUE and prevent the retry from reaching the
  * actual send step. Returns true if a new row was inserted.
  *
- * (Upstream used INSERT OR IGNORE — translated to INSERT … ON CONFLICT DO NOTHING
+ * (SQLite variant used idempotent-insert — translated to INSERT … ON CONFLICT DO NOTHING
  * for PgBouncer-safe Postgres.)
  */
 export async function createPendingQuestion(pq: PendingQuestion): Promise<boolean> {
@@ -155,7 +155,7 @@ export async function deletePendingQuestion(questionId: string): Promise<void> {
  * createPendingQuestion: delivery retries with the same approval_id must not
  * fail on UNIQUE before the send step gets a chance to succeed.
  *
- * (Upstream used INSERT OR IGNORE — translated to INSERT … ON CONFLICT DO NOTHING.)
+ * (SQLite variant used idempotent-insert — translated to INSERT … ON CONFLICT DO NOTHING.)
  */
 export async function createPendingApproval(
   pa: Partial<PendingApproval> &

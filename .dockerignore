@@ -1,11 +1,10 @@
 # VCS
-.git
+.git/
 .gitignore
 .gitmodules
 
 # Secrets and credentials — NEVER include in container image
-.env
-.env.*
+.env*
 *.pem
 *.key
 *.p12
