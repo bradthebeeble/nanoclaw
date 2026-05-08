@@ -195,7 +195,10 @@ export async function up(client: PoolClient): Promise<void> {
   `);
 
   // ── From 002-chat-sdk-state ──
-  // Note: subscribed_at uses DEFAULT NOW() instead of DEFAULT (datetime('now')).
+  // Note: subscribed_at is DB-generated so we use TIMESTAMPTZ (Pitfall 4 from 01-RESEARCH.md).
+  // Application-managed date columns (created_at, last_seen, etc.) remain TEXT because the
+  // TS types are `string` and the app stores pre-formatted ISO-8601 strings. This is the
+  // correct split: DB-generated timestamps → TIMESTAMPTZ; app-managed ISO strings → TEXT.
 
   await client.query(`
     CREATE TABLE IF NOT EXISTS chat_sdk_kv (
@@ -206,7 +209,7 @@ export async function up(client: PoolClient): Promise<void> {
 
     CREATE TABLE IF NOT EXISTS chat_sdk_subscriptions (
       thread_id     TEXT PRIMARY KEY,
-      subscribed_at TEXT NOT NULL DEFAULT (TO_CHAR(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+      subscribed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
     CREATE TABLE IF NOT EXISTS chat_sdk_locks (
