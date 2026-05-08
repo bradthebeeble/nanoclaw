@@ -43,16 +43,16 @@ import type { PoolClient } from 'pg';
 // migration subsumes. These are backfilled in schema_version so the
 // migration runner skips them if they are ever registered.
 export const UPSTREAM_MIGRATION_NAMES = [
-  'initial-v2-schema',       // 001
-  'chat-sdk-state',          // 002
-  'pending-approvals',       // 003 (moduleApprovalsPendingApprovals)
-  'agent-destinations',      // 004 (moduleAgentToAgentDestinations)
+  'initial-v2-schema', // 001
+  'chat-sdk-state', // 002
+  'pending-approvals', // 003 (moduleApprovalsPendingApprovals)
+  'agent-destinations', // 004 (moduleAgentToAgentDestinations)
   'pending-approvals-title-options', // 007 (moduleApprovalsTitleOptions)
-  'dropped-messages',        // 008
+  'dropped-messages', // 008
   'drop-pending-credentials', // 009
-  'engage-modes',            // 010
+  'engage-modes', // 010
   'pending-sender-approvals', // 011
-  'channel-registration',    // 012
+  'channel-registration', // 012
   'approval-render-metadata', // 013
 ] as const;
 

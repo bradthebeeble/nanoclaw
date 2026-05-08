@@ -52,7 +52,10 @@ export class SqliteStateAdapter implements StateAdapter {
 
   async setIfNotExists(key: string, value: unknown, ttlMs?: number): Promise<boolean> {
     // Delete expired entry first
-    await run('DELETE FROM chat_sdk_kv WHERE key = $1 AND expires_at IS NOT NULL AND expires_at < $2', [key, Date.now()]);
+    await run('DELETE FROM chat_sdk_kv WHERE key = $1 AND expires_at IS NOT NULL AND expires_at < $2', [
+      key,
+      Date.now(),
+    ]);
     const expiresAt = ttlMs ? Date.now() + ttlMs : null;
     const rows = await run(
       `INSERT INTO chat_sdk_kv (key, value, expires_at)
@@ -110,10 +113,11 @@ export class SqliteStateAdapter implements StateAdapter {
 
   async extendLock(lock: Lock, ttlMs: number): Promise<boolean> {
     const newExpiry = Date.now() + ttlMs;
-    const rows = await run(
-      'UPDATE chat_sdk_locks SET expires_at = $1 WHERE thread_id = $2 AND token = $3',
-      [newExpiry, lock.threadId, lock.token],
-    );
+    const rows = await run('UPDATE chat_sdk_locks SET expires_at = $1 WHERE thread_id = $2 AND token = $3', [
+      newExpiry,
+      lock.threadId,
+      lock.token,
+    ]);
     if (rows > 0) {
       lock.expiresAt = newExpiry;
       return true;
@@ -134,10 +138,12 @@ export class SqliteStateAdapter implements StateAdapter {
       [key],
     );
     const nextIdx = (maxRow?.maxIdx ?? -1) + 1;
-    await run(
-      'INSERT INTO chat_sdk_lists (key, idx, value, expires_at) VALUES ($1, $2, $3, $4)',
-      [key, nextIdx, JSON.stringify(value), expiresAt],
-    );
+    await run('INSERT INTO chat_sdk_lists (key, idx, value, expires_at) VALUES ($1, $2, $3, $4)', [
+      key,
+      nextIdx,
+      JSON.stringify(value),
+      expiresAt,
+    ]);
     if (options?.maxLength) {
       const cutoff = nextIdx - options.maxLength;
       if (cutoff >= 0) {
@@ -166,36 +172,35 @@ export class SqliteStateAdapter implements StateAdapter {
   async dequeue(threadId: string): Promise<QueueEntry | null> {
     const key = `queue:${threadId}`;
     // Use a transaction to atomically select-then-delete the first row
-    return getPool().connect().then(async (client) => {
-      try {
-        await client.query('BEGIN');
-        const res = await client.query<{ idx: number; value: string }>(
-          'SELECT idx, value FROM chat_sdk_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1',
-          [key],
-        );
-        if (res.rows.length === 0) {
+    return getPool()
+      .connect()
+      .then(async (client) => {
+        try {
+          await client.query('BEGIN');
+          const res = await client.query<{ idx: number; value: string }>(
+            'SELECT idx, value FROM chat_sdk_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1',
+            [key],
+          );
+          if (res.rows.length === 0) {
+            await client.query('COMMIT');
+            return null;
+          }
+          const row = res.rows[0];
+          await client.query('DELETE FROM chat_sdk_lists WHERE key = $1 AND idx = $2', [key, row.idx]);
           await client.query('COMMIT');
-          return null;
+          return JSON.parse(row.value) as QueueEntry;
+        } catch (err) {
+          await client.query('ROLLBACK');
+          throw err;
+        } finally {
+          client.release();
         }
-        const row = res.rows[0];
-        await client.query('DELETE FROM chat_sdk_lists WHERE key = $1 AND idx = $2', [key, row.idx]);
-        await client.query('COMMIT');
-        return JSON.parse(row.value) as QueueEntry;
-      } catch (err) {
-        await client.query('ROLLBACK');
-        throw err;
-      } finally {
-        client.release();
-      }
-    });
+      });
   }
 
   async queueDepth(threadId: string): Promise<number> {
     const key = `queue:${threadId}`;
-    const row = await get<{ count: string }>(
-      'SELECT COUNT(*) as count FROM chat_sdk_lists WHERE key = $1',
-      [key],
-    );
+    const row = await get<{ count: string }>('SELECT COUNT(*) as count FROM chat_sdk_lists WHERE key = $1', [key]);
     return Number(row?.count ?? 0);
   }
 

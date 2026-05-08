@@ -43,7 +43,16 @@ vi.mock('../../delivery.js', () => ({
 vi.mock('./user-dm.js', () => ({
   ensureUserDm: vi.fn(async (userId: string) => {
     const { getPool } = await import('../../db/connection.js');
-    const result = await getPool().query<{ id: string; channel_type: string; platform_id: string; is_group: number; unknown_sender_policy: string; created_at: string; denied_at: string | null; name: string }>(
+    const result = await getPool().query<{
+      id: string;
+      channel_type: string;
+      platform_id: string;
+      is_group: number;
+      unknown_sender_policy: string;
+      created_at: string;
+      denied_at: string | null;
+      name: string;
+    }>(
       `SELECT mg.* FROM messaging_groups mg
          JOIN user_dms ud ON ud.messaging_group_id = mg.id
         WHERE ud.user_id = $1`,

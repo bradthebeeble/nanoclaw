@@ -22,7 +22,15 @@ export async function createMessagingGroup(group: MessagingGroup): Promise<void>
   await run(
     `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [group.id, group.channel_type, group.platform_id, group.name, group.is_group, group.unknown_sender_policy, group.created_at],
+    [
+      group.id,
+      group.channel_type,
+      group.platform_id,
+      group.name,
+      group.is_group,
+      group.unknown_sender_policy,
+      group.created_at,
+    ],
   );
 }
 
@@ -30,11 +38,14 @@ export async function getMessagingGroup(id: string): Promise<MessagingGroup | un
   return get<MessagingGroup>('SELECT * FROM messaging_groups WHERE id = $1', [id]);
 }
 
-export async function getMessagingGroupByPlatform(channelType: string, platformId: string): Promise<MessagingGroup | undefined> {
-  return get<MessagingGroup>(
-    'SELECT * FROM messaging_groups WHERE channel_type = $1 AND platform_id = $2',
-    [channelType, platformId],
-  );
+export async function getMessagingGroupByPlatform(
+  channelType: string,
+  platformId: string,
+): Promise<MessagingGroup | undefined> {
+  return get<MessagingGroup>('SELECT * FROM messaging_groups WHERE channel_type = $1 AND platform_id = $2', [
+    channelType,
+    platformId,
+  ]);
 }
 
 /**
@@ -117,9 +128,16 @@ export async function createMessagingGroupAgent(mga: MessagingGroupAgent): Promi
      )
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
-      mga.id, mga.messaging_group_id, mga.agent_group_id,
-      mga.engage_mode, mga.engage_pattern, mga.sender_scope, mga.ignored_message_policy,
-      mga.session_mode, mga.priority, mga.created_at,
+      mga.id,
+      mga.messaging_group_id,
+      mga.agent_group_id,
+      mga.engage_mode,
+      mga.engage_pattern,
+      mga.sender_scope,
+      mga.ignored_message_policy,
+      mga.session_mode,
+      mga.priority,
+      mga.created_at,
     ],
   );
 

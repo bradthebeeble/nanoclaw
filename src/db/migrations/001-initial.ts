@@ -1,4 +1,3 @@
-
 export const migration001 = {
   version: 1,
   name: 'initial-v2-schema',

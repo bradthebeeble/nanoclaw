@@ -67,7 +67,13 @@ export function initDb(): Pool {
  * For tests only — creates a pool pointing at a testcontainers Postgres.
  * Pass the StartedPostgreSqlContainer connection details.
  */
-export function initTestDb(opts: { host: string; port: number; database: string; user: string; password: string }): Pool {
+export function initTestDb(opts: {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+}): Pool {
   if (_pool) {
     void _pool.end();
   }
@@ -144,9 +150,6 @@ export async function tx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> 
  * (e.g. messaging-groups.ts) that guard optional module tables.
  */
 export async function hasTable(name: string): Promise<boolean> {
-  const result = await getPool().query<{ found: string | null }>(
-    `SELECT to_regclass($1) AS found`,
-    [`public.${name}`],
-  );
+  const result = await getPool().query<{ found: string | null }>(`SELECT to_regclass($1) AS found`, [`public.${name}`]);
   return result.rows[0]?.found !== null;
 }

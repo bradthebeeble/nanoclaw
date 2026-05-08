@@ -28,9 +28,16 @@ export async function createPendingSenderApproval(row: PendingSenderApproval): P
      )
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
-      row.id, row.messaging_group_id, row.agent_group_id, row.sender_identity,
-      row.sender_name, row.original_message, row.approver_user_id, row.created_at,
-      row.title, row.options_json,
+      row.id,
+      row.messaging_group_id,
+      row.agent_group_id,
+      row.sender_identity,
+      row.sender_name,
+      row.original_message,
+      row.approver_user_id,
+      row.created_at,
+      row.title,
+      row.options_json,
     ],
   );
 }

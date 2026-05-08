@@ -1,4 +1,3 @@
-
 /**
  * Retroactive schema fix: earlier migration 003 was edited after it had
  * already been applied in the wild, adding `title` and `options_json`

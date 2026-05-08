@@ -74,7 +74,16 @@ afterAll(async () => {
 vi.mock('./user-dm.js', () => ({
   ensureUserDm: vi.fn(async (userId: string) => {
     const { getPool } = await import('../../db/connection.js');
-    const result = await getPool().query<{ id: string; channel_type: string; platform_id: string; is_group: number; unknown_sender_policy: string; created_at: string; denied_at: string | null; name: string }>(
+    const result = await getPool().query<{
+      id: string;
+      channel_type: string;
+      platform_id: string;
+      is_group: number;
+      unknown_sender_policy: string;
+      created_at: string;
+      denied_at: string | null;
+      name: string;
+    }>(
       `SELECT mg.* FROM messaging_groups mg
          JOIN user_dms ud ON ud.messaging_group_id = mg.id
         WHERE ud.user_id = $1`,
@@ -243,10 +252,7 @@ describe('unknown-channel registration flow', () => {
       sender_scope: string;
       ignored_message_policy: string;
       agent_group_id: string;
-    }>(
-      'SELECT * FROM messaging_group_agents WHERE messaging_group_id = $1',
-      [pending.messaging_group_id],
-    );
+    }>('SELECT * FROM messaging_group_agents WHERE messaging_group_id = $1', [pending.messaging_group_id]);
     const mga = mgaRows[0];
     expect(mga).toBeDefined();
     expect(mga.engage_mode).toBe('mention-sticky'); // group (threadId != null)

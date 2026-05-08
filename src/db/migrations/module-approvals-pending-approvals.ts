@@ -1,4 +1,3 @@
-
 /**
  * `pending_approvals` table — host-side records for any approval-requiring
  * request. Used by:

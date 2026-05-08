@@ -204,7 +204,12 @@ setAccessGate(async (event, userId, mg, agentGroupId): Promise<AccessGateResult>
  * canAccessAgentGroup accepts (owner, admin, or group member).
  */
 setSenderScopeGate(
-  async (_event: InboundEvent, userId: string | null, _mg: MessagingGroup, agent: MessagingGroupAgent): Promise<AccessGateResult> => {
+  async (
+    _event: InboundEvent,
+    userId: string | null,
+    _mg: MessagingGroup,
+    agent: MessagingGroupAgent,
+  ): Promise<AccessGateResult> => {
     if (agent.sender_scope === 'all') return { allowed: true };
     if (!userId) return { allowed: false, reason: 'unknown_user_scope' };
     const decision = await canAccessAgentGroup(userId, agent.agent_group_id);
@@ -238,7 +243,8 @@ async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<b
   // via stolen card forwarding.
   const clickerId = payload.userId ? `${payload.channelType}:${payload.userId}` : null;
   const isAuthorized =
-    clickerId !== null && (clickerId === row.approver_user_id || (await hasAdminPrivilege(clickerId, row.agent_group_id)));
+    clickerId !== null &&
+    (clickerId === row.approver_user_id || (await hasAdminPrivilege(clickerId, row.agent_group_id)));
   if (!isAuthorized) {
     log.warn('Unknown-sender approval click rejected — unauthorized clicker', {
       approvalId: row.id,
@@ -315,7 +321,8 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
 
   const clickerId = payload.userId ? `${payload.channelType}:${payload.userId}` : null;
   const isAuthorized =
-    clickerId !== null && (clickerId === row.approver_user_id || (await hasAdminPrivilege(clickerId, row.agent_group_id)));
+    clickerId !== null &&
+    (clickerId === row.approver_user_id || (await hasAdminPrivilege(clickerId, row.agent_group_id)));
   if (!isAuthorized) {
     log.warn('Channel registration click rejected — unauthorized clicker', {
       messagingGroupId: row.messaging_group_id,

@@ -16,10 +16,9 @@ export async function removeMember(userId: string, agentGroupId: string): Promis
 }
 
 export async function getMembers(agentGroupId: string): Promise<AgentGroupMember[]> {
-  return all<AgentGroupMember>(
-    'SELECT * FROM agent_group_members WHERE agent_group_id = $1 ORDER BY added_at',
-    [agentGroupId],
-  );
+  return all<AgentGroupMember>('SELECT * FROM agent_group_members WHERE agent_group_id = $1 ORDER BY added_at', [
+    agentGroupId,
+  ]);
 }
 
 /**
@@ -30,18 +29,18 @@ export async function isMember(userId: string, agentGroupId: string): Promise<bo
   if ((await isOwner(userId)) || (await isGlobalAdmin(userId)) || (await isAdminOfAgentGroup(userId, agentGroupId))) {
     return true;
   }
-  const row = await get(
-    'SELECT 1 FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2 LIMIT 1',
-    [userId, agentGroupId],
-  );
+  const row = await get('SELECT 1 FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2 LIMIT 1', [
+    userId,
+    agentGroupId,
+  ]);
   return !!row;
 }
 
 /** Direct row lookup — does not honor the admin/owner implicit-membership rule. */
 export async function hasMembershipRow(userId: string, agentGroupId: string): Promise<boolean> {
-  const row = await get(
-    'SELECT 1 FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2 LIMIT 1',
-    [userId, agentGroupId],
-  );
+  const row = await get('SELECT 1 FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2 LIMIT 1', [
+    userId,
+    agentGroupId,
+  ]);
   return !!row;
 }

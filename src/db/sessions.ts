@@ -8,8 +8,15 @@ export async function createSession(session: Session): Promise<void> {
     `INSERT INTO sessions (id, agent_group_id, messaging_group_id, thread_id, agent_provider, status, container_status, last_active, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [
-      session.id, session.agent_group_id, session.messaging_group_id, session.thread_id,
-      session.agent_provider, session.status, session.container_status, session.last_active, session.created_at,
+      session.id,
+      session.agent_group_id,
+      session.messaging_group_id,
+      session.thread_id,
+      session.agent_provider,
+      session.status,
+      session.container_status,
+      session.last_active,
+      session.created_at,
     ],
   );
 }
@@ -20,15 +27,16 @@ export async function getSession(id: string): Promise<Session | undefined> {
 
 export async function findSession(messagingGroupId: string, threadId: string | null): Promise<Session | undefined> {
   if (threadId) {
-    return get<Session>(
-      'SELECT * FROM sessions WHERE messaging_group_id = $1 AND thread_id = $2 AND status = $3',
-      [messagingGroupId, threadId, 'active'],
-    );
+    return get<Session>('SELECT * FROM sessions WHERE messaging_group_id = $1 AND thread_id = $2 AND status = $3', [
+      messagingGroupId,
+      threadId,
+      'active',
+    ]);
   }
-  return get<Session>(
-    'SELECT * FROM sessions WHERE messaging_group_id = $1 AND thread_id IS NULL AND status = $2',
-    [messagingGroupId, 'active'],
-  );
+  return get<Session>('SELECT * FROM sessions WHERE messaging_group_id = $1 AND thread_id IS NULL AND status = $2', [
+    messagingGroupId,
+    'active',
+  ]);
 }
 
 /**
@@ -112,8 +120,15 @@ export async function createPendingQuestion(pq: PendingQuestion): Promise<boolea
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      ON CONFLICT (question_id) DO NOTHING`,
     [
-      pq.question_id, pq.session_id, pq.message_out_id, pq.platform_id, pq.channel_type,
-      pq.thread_id, pq.title, JSON.stringify(pq.options), pq.created_at,
+      pq.question_id,
+      pq.session_id,
+      pq.message_out_id,
+      pq.platform_id,
+      pq.channel_type,
+      pq.thread_id,
+      pq.title,
+      JSON.stringify(pq.options),
+      pq.created_at,
     ],
   );
   return rows > 0;
@@ -168,9 +183,20 @@ export async function createPendingApproval(
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      ON CONFLICT (approval_id) DO NOTHING`,
     [
-      merged.approval_id, merged.session_id, merged.request_id, merged.action, merged.payload, merged.created_at,
-      merged.agent_group_id, merged.channel_type, merged.platform_id, merged.platform_message_id, merged.expires_at,
-      merged.status, merged.title, merged.options_json,
+      merged.approval_id,
+      merged.session_id,
+      merged.request_id,
+      merged.action,
+      merged.payload,
+      merged.created_at,
+      merged.agent_group_id,
+      merged.channel_type,
+      merged.platform_id,
+      merged.platform_message_id,
+      merged.expires_at,
+      merged.status,
+      merged.title,
+      merged.options_json,
     ],
   );
   return rows > 0;
@@ -180,7 +206,10 @@ export async function getPendingApproval(approvalId: string): Promise<PendingApp
   return get<PendingApproval>('SELECT * FROM pending_approvals WHERE approval_id = $1', [approvalId]);
 }
 
-export async function updatePendingApprovalStatus(approvalId: string, status: PendingApproval['status']): Promise<void> {
+export async function updatePendingApprovalStatus(
+  approvalId: string,
+  status: PendingApproval['status'],
+): Promise<void> {
   await run('UPDATE pending_approvals SET status = $1 WHERE approval_id = $2', [status, approvalId]);
 }
 

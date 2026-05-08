@@ -34,13 +34,19 @@ export async function recordDroppedMessage(msg: {
        reason = excluded.reason,
        message_count = unregistered_senders.message_count + 1,
        last_seen = excluded.last_seen`,
-    [msg.channel_type, msg.platform_id, msg.user_id, msg.sender_name, msg.reason, msg.messaging_group_id, msg.agent_group_id, now],
+    [
+      msg.channel_type,
+      msg.platform_id,
+      msg.user_id,
+      msg.sender_name,
+      msg.reason,
+      msg.messaging_group_id,
+      msg.agent_group_id,
+      now,
+    ],
   );
 }
 
 export async function getUnregisteredSenders(limit = 50): Promise<UnregisteredSender[]> {
-  return all<UnregisteredSender>(
-    'SELECT * FROM unregistered_senders ORDER BY last_seen DESC LIMIT $1',
-    [limit],
-  );
+  return all<UnregisteredSender>('SELECT * FROM unregistered_senders ORDER BY last_seen DESC LIMIT $1', [limit]);
 }

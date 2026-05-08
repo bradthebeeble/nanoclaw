@@ -1,4 +1,3 @@
-
 export const migration002 = {
   version: 2,
   name: 'chat-sdk-state',

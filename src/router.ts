@@ -280,8 +280,10 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
 
     const engages = await evaluateEngage(agent, messageText, isMention, mg, event.threadId);
 
-    const accessResult = !engages || !accessGate ? { allowed: true } : await accessGate(event, userId, mg, agent.agent_group_id);
-    const scopeResult = !engages || !senderScopeGate ? { allowed: true } : await senderScopeGate(event, userId, mg, agent);
+    const accessResult =
+      !engages || !accessGate ? { allowed: true } : await accessGate(event, userId, mg, agent.agent_group_id);
+    const scopeResult =
+      !engages || !senderScopeGate ? { allowed: true } : await senderScopeGate(event, userId, mg, agent);
     const accessOk = engages && accessResult.allowed;
     const scopeOk = engages && scopeResult.allowed;
 

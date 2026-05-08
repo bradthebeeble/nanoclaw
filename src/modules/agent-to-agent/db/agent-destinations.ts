@@ -50,17 +50,17 @@ export async function createDestination(row: AgentDestination): Promise<void> {
 }
 
 export async function getDestinations(agentGroupId: string): Promise<AgentDestination[]> {
-  return all<AgentDestination>(
-    'SELECT * FROM agent_destinations WHERE agent_group_id = $1',
-    [agentGroupId],
-  );
+  return all<AgentDestination>('SELECT * FROM agent_destinations WHERE agent_group_id = $1', [agentGroupId]);
 }
 
-export async function getDestinationByName(agentGroupId: string, localName: string): Promise<AgentDestination | undefined> {
-  return get<AgentDestination>(
-    'SELECT * FROM agent_destinations WHERE agent_group_id = $1 AND local_name = $2',
-    [agentGroupId, localName],
-  );
+export async function getDestinationByName(
+  agentGroupId: string,
+  localName: string,
+): Promise<AgentDestination | undefined> {
+  return get<AgentDestination>('SELECT * FROM agent_destinations WHERE agent_group_id = $1 AND local_name = $2', [
+    agentGroupId,
+    localName,
+  ]);
 }
 
 /** Reverse lookup: what does this agent call the given target? */
@@ -76,7 +76,11 @@ export async function getDestinationByTarget(
 }
 
 /** Permission check: can this agent send to this target? */
-export async function hasDestination(agentGroupId: string, targetType: 'channel' | 'agent', targetId: string): Promise<boolean> {
+export async function hasDestination(
+  agentGroupId: string,
+  targetType: 'channel' | 'agent',
+  targetId: string,
+): Promise<boolean> {
   const row = await get(
     'SELECT 1 FROM agent_destinations WHERE agent_group_id = $1 AND target_type = $2 AND target_id = $3 LIMIT 1',
     [agentGroupId, targetType, targetId],
@@ -90,10 +94,7 @@ export async function hasDestination(agentGroupId: string, targetType: 'channel'
  * so the deletion propagates to the running container's inbound.db.
  */
 export async function deleteDestination(agentGroupId: string, localName: string): Promise<void> {
-  await run(
-    'DELETE FROM agent_destinations WHERE agent_group_id = $1 AND local_name = $2',
-    [agentGroupId, localName],
-  );
+  await run('DELETE FROM agent_destinations WHERE agent_group_id = $1 AND local_name = $2', [agentGroupId, localName]);
 }
 
 /**
@@ -101,10 +102,11 @@ export async function deleteDestination(agentGroupId: string, localName: string)
  * or the target.
  */
 export async function deleteAllDestinationsTouching(agentGroupId: string): Promise<void> {
-  await run(
-    'DELETE FROM agent_destinations WHERE agent_group_id = $1 OR (target_type = $2 AND target_id = $3)',
-    [agentGroupId, 'agent', agentGroupId],
-  );
+  await run('DELETE FROM agent_destinations WHERE agent_group_id = $1 OR (target_type = $2 AND target_id = $3)', [
+    agentGroupId,
+    'agent',
+    agentGroupId,
+  ]);
 }
 
 /**

@@ -20,7 +20,11 @@ export async function revokeRole(userId: string, role: UserRoleKind, agentGroupI
   if (agentGroupId === null) {
     await run('DELETE FROM user_roles WHERE user_id = $1 AND role = $2 AND agent_group_id IS NULL', [userId, role]);
   } else {
-    await run('DELETE FROM user_roles WHERE user_id = $1 AND role = $2 AND agent_group_id = $3', [userId, role, agentGroupId]);
+    await run('DELETE FROM user_roles WHERE user_id = $1 AND role = $2 AND agent_group_id = $3', [
+      userId,
+      role,
+      agentGroupId,
+    ]);
   }
 }
 
@@ -45,10 +49,11 @@ export async function isGlobalAdmin(userId: string): Promise<boolean> {
 }
 
 export async function isAdminOfAgentGroup(userId: string, agentGroupId: string): Promise<boolean> {
-  const row = await get(
-    'SELECT 1 FROM user_roles WHERE user_id = $1 AND role = $2 AND agent_group_id = $3 LIMIT 1',
-    [userId, 'admin', agentGroupId],
-  );
+  const row = await get('SELECT 1 FROM user_roles WHERE user_id = $1 AND role = $2 AND agent_group_id = $3 LIMIT 1', [
+    userId,
+    'admin',
+    agentGroupId,
+  ]);
   return !!row;
 }
 
@@ -58,30 +63,25 @@ export async function hasAdminPrivilege(userId: string, agentGroupId: string): P
 }
 
 export async function getOwners(): Promise<UserRole[]> {
-  return all<UserRole>(
-    'SELECT * FROM user_roles WHERE role = $1 AND agent_group_id IS NULL ORDER BY granted_at',
-    ['owner'],
-  );
+  return all<UserRole>('SELECT * FROM user_roles WHERE role = $1 AND agent_group_id IS NULL ORDER BY granted_at', [
+    'owner',
+  ]);
 }
 
 export async function hasAnyOwner(): Promise<boolean> {
-  const row = await get(
-    'SELECT 1 FROM user_roles WHERE role = $1 AND agent_group_id IS NULL LIMIT 1',
-    ['owner'],
-  );
+  const row = await get('SELECT 1 FROM user_roles WHERE role = $1 AND agent_group_id IS NULL LIMIT 1', ['owner']);
   return !!row;
 }
 
 export async function getGlobalAdmins(): Promise<UserRole[]> {
-  return all<UserRole>(
-    'SELECT * FROM user_roles WHERE role = $1 AND agent_group_id IS NULL ORDER BY granted_at',
-    ['admin'],
-  );
+  return all<UserRole>('SELECT * FROM user_roles WHERE role = $1 AND agent_group_id IS NULL ORDER BY granted_at', [
+    'admin',
+  ]);
 }
 
 export async function getAdminsOfAgentGroup(agentGroupId: string): Promise<UserRole[]> {
-  return all<UserRole>(
-    'SELECT * FROM user_roles WHERE role = $1 AND agent_group_id = $2 ORDER BY granted_at',
-    ['admin', agentGroupId],
-  );
+  return all<UserRole>('SELECT * FROM user_roles WHERE role = $1 AND agent_group_id = $2 ORDER BY granted_at', [
+    'admin',
+    agentGroupId,
+  ]);
 }

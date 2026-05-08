@@ -24,32 +24,40 @@ export async function createPendingChannelApproval(row: PendingChannelApproval):
      )
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
-      row.messaging_group_id, row.agent_group_id, row.original_message,
-      row.approver_user_id, row.created_at, row.title, row.options_json,
+      row.messaging_group_id,
+      row.agent_group_id,
+      row.original_message,
+      row.approver_user_id,
+      row.created_at,
+      row.title,
+      row.options_json,
     ],
   );
 }
 
 export async function getPendingChannelApproval(messagingGroupId: string): Promise<PendingChannelApproval | undefined> {
-  return get<PendingChannelApproval>(
-    'SELECT * FROM pending_channel_approvals WHERE messaging_group_id = $1',
-    [messagingGroupId],
-  );
+  return get<PendingChannelApproval>('SELECT * FROM pending_channel_approvals WHERE messaging_group_id = $1', [
+    messagingGroupId,
+  ]);
 }
 
 export async function hasInFlightChannelApproval(messagingGroupId: string): Promise<boolean> {
-  const row = await get<{ x: number }>(
-    'SELECT 1 AS x FROM pending_channel_approvals WHERE messaging_group_id = $1',
-    [messagingGroupId],
-  );
+  const row = await get<{ x: number }>('SELECT 1 AS x FROM pending_channel_approvals WHERE messaging_group_id = $1', [
+    messagingGroupId,
+  ]);
   return row !== undefined;
 }
 
-export async function updatePendingChannelApprovalCard(messagingGroupId: string, title: string, optionsJson: string): Promise<void> {
-  await run(
-    'UPDATE pending_channel_approvals SET title = $1, options_json = $2 WHERE messaging_group_id = $3',
-    [title, optionsJson, messagingGroupId],
-  );
+export async function updatePendingChannelApprovalCard(
+  messagingGroupId: string,
+  title: string,
+  optionsJson: string,
+): Promise<void> {
+  await run('UPDATE pending_channel_approvals SET title = $1, options_json = $2 WHERE messaging_group_id = $3', [
+    title,
+    optionsJson,
+    messagingGroupId,
+  ]);
 }
 
 export async function deletePendingChannelApproval(messagingGroupId: string): Promise<void> {
