@@ -1,0 +1,53 @@
+# VCS
+.git
+.gitignore
+.gitmodules
+
+# Secrets and credentials — NEVER include in container image
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+secrets/
+.aws/
+.ssh/
+
+# Development artifacts
+node_modules/
+dist/
+runtimes/k8s4claw-adapter/dist/
+runtimes/k8s4claw-adapter/node_modules/
+
+# Test files (not needed at runtime)
+**/*.test.ts
+setup/
+tests/
+
+# Local data directories
+data/
+logs/
+groups/
+
+# Editor and OS artifacts
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build tools config (not needed at runtime)
+.husky/
+.eslintrc*
+eslint.config.*
+prettier.config.*
+.prettierrc*
+vitest.config.*
+
+# Docker files themselves (avoid recursive copy confusion)
+Dockerfile
+.dockerignore
