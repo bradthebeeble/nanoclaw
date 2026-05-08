@@ -1,7 +1,3 @@
-import type Database from 'better-sqlite3';
-
-import type { Migration } from './index.js';
-
 /**
  * Agent destinations: per-agent named map of allowed message targets.
  *
@@ -18,10 +14,11 @@ import type { Migration } from './index.js';
 // Retains the original `name` ('agent-destinations') so existing DBs that
 // already recorded this migration under that name don't re-run it. The
 // module- prefix lives on the filename / export identifier only.
-export const moduleAgentToAgentDestinations: Migration = {
+export const moduleAgentToAgentDestinations = {
   version: 4,
   name: 'agent-destinations',
-  up(db: Database.Database) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up(db: any) {
     db.exec(`
       CREATE TABLE agent_destinations (
         agent_group_id  TEXT NOT NULL REFERENCES agent_groups(id),

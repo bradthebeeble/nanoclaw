@@ -14,104 +14,91 @@ import {
   getDestinationByTarget,
   normalizeName,
 } from '../modules/agent-to-agent/db/agent-destinations.js';
-import { getDb, hasTable } from './connection.js';
+import { get, all, run, hasTable } from './connection.js';
 
 // ── Messaging Groups ──
 
-export function createMessagingGroup(group: MessagingGroup): void {
-  getDb()
-    .prepare(
-      `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
-       VALUES (@id, @channel_type, @platform_id, @name, @is_group, @unknown_sender_policy, @created_at)`,
-    )
-    .run(group);
+export async function createMessagingGroup(group: MessagingGroup): Promise<void> {
+  await run(
+    `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [group.id, group.channel_type, group.platform_id, group.name, group.is_group, group.unknown_sender_policy, group.created_at],
+  );
 }
 
-export function getMessagingGroup(id: string): MessagingGroup | undefined {
-  return getDb().prepare('SELECT * FROM messaging_groups WHERE id = ?').get(id) as MessagingGroup | undefined;
+export async function getMessagingGroup(id: string): Promise<MessagingGroup | undefined> {
+  return get<MessagingGroup>('SELECT * FROM messaging_groups WHERE id = $1', [id]);
 }
 
-export function getMessagingGroupByPlatform(channelType: string, platformId: string): MessagingGroup | undefined {
-  return getDb()
-    .prepare('SELECT * FROM messaging_groups WHERE channel_type = ? AND platform_id = ?')
-    .get(channelType, platformId) as MessagingGroup | undefined;
+export async function getMessagingGroupByPlatform(channelType: string, platformId: string): Promise<MessagingGroup | undefined> {
+  return get<MessagingGroup>(
+    'SELECT * FROM messaging_groups WHERE channel_type = $1 AND platform_id = $2',
+    [channelType, platformId],
+  );
 }
 
 /**
  * Combined lookup for the router's fast-drop path. Returns the messaging
  * group (if it exists) and a count of wired agents in one query — lets
  * `routeInbound` short-circuit messages for unwired / unknown channels
- * with a single DB read instead of four (mg lookup, sender upsert, agents
- * lookup, dropped_messages insert).
+ * with a single DB read instead of four.
  *
  * Returns `null` when no messaging_groups row exists for this channel.
- * Returns `{ mg, agentCount: 0 }` when the row exists but has no wired
- * agents. Uses the `UNIQUE(channel_type, platform_id)` index plus the
- * `UNIQUE(messaging_group_id, agent_group_id)` index for the JOIN — both
- * covered by existing SQLite auto-indexes from the UNIQUE constraints.
+ * Returns `{ mg, agentCount: 0 }` when the row exists but has no wired agents.
  */
-export function getMessagingGroupWithAgentCount(
+export async function getMessagingGroupWithAgentCount(
   channelType: string,
   platformId: string,
-): { mg: MessagingGroup; agentCount: number } | null {
-  const row = getDb()
-    .prepare(
-      `SELECT mg.*, COUNT(mga.id) AS agent_count
-         FROM messaging_groups mg
-    LEFT JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id
-        WHERE mg.channel_type = ? AND mg.platform_id = ?
-     GROUP BY mg.id`,
-    )
-    .get(channelType, platformId) as (MessagingGroup & { agent_count: number }) | undefined;
+): Promise<{ mg: MessagingGroup; agentCount: number } | null> {
+  const row = await get<MessagingGroup & { agent_count: number }>(
+    `SELECT mg.*, COUNT(mga.id) AS agent_count
+       FROM messaging_groups mg
+  LEFT JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id
+      WHERE mg.channel_type = $1 AND mg.platform_id = $2
+   GROUP BY mg.id`,
+    [channelType, platformId],
+  );
   if (!row) return null;
   const { agent_count, ...mg } = row;
-  return { mg: mg as MessagingGroup, agentCount: agent_count };
+  return { mg: mg as MessagingGroup, agentCount: Number(agent_count) };
 }
 
-export function getAllMessagingGroups(): MessagingGroup[] {
-  return getDb().prepare('SELECT * FROM messaging_groups ORDER BY name').all() as MessagingGroup[];
+export async function getAllMessagingGroups(): Promise<MessagingGroup[]> {
+  return all<MessagingGroup>('SELECT * FROM messaging_groups ORDER BY name');
 }
 
-export function getMessagingGroupsByChannel(channelType: string): MessagingGroup[] {
-  return getDb().prepare('SELECT * FROM messaging_groups WHERE channel_type = ?').all(channelType) as MessagingGroup[];
+export async function getMessagingGroupsByChannel(channelType: string): Promise<MessagingGroup[]> {
+  return all<MessagingGroup>('SELECT * FROM messaging_groups WHERE channel_type = $1', [channelType]);
 }
 
-export function updateMessagingGroup(
+export async function updateMessagingGroup(
   id: string,
   updates: Partial<Pick<MessagingGroup, 'name' | 'is_group' | 'unknown_sender_policy'>>,
-): void {
+): Promise<void> {
   const fields: string[] = [];
-  const values: Record<string, unknown> = { id };
+  const values: unknown[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
     if (value !== undefined) {
-      fields.push(`${key} = @${key}`);
-      values[key] = value;
+      fields.push(`${key} = $${values.length + 1}`);
+      values.push(value);
     }
   }
   if (fields.length === 0) return;
 
-  getDb()
-    .prepare(`UPDATE messaging_groups SET ${fields.join(', ')} WHERE id = @id`)
-    .run(values);
+  values.push(id);
+  await run(`UPDATE messaging_groups SET ${fields.join(', ')} WHERE id = $${values.length}`, values);
 }
 
-export function deleteMessagingGroup(id: string): void {
-  getDb().prepare('DELETE FROM messaging_groups WHERE id = ?').run(id);
+export async function deleteMessagingGroup(id: string): Promise<void> {
+  await run('DELETE FROM messaging_groups WHERE id = $1', [id]);
 }
 
 /**
  * Mark a messaging group as denied by the owner (channel-registration flow).
- * Future mentions on this channel silently drop until an admin explicitly
- * wires it via `createMessagingGroupAgent`, which implicitly clears the
- * denied state by making `agentCount > 0` — the router's denied-channel
- * check sits on the `agentCount === 0` branch.
- *
- * Passing null unsets the flag (used by tests or a future "unblock channel"
- * admin command).
  */
-export function setMessagingGroupDeniedAt(id: string, deniedAt: string | null): void {
-  getDb().prepare('UPDATE messaging_groups SET denied_at = ? WHERE id = ?').run(deniedAt, id);
+export async function setMessagingGroupDeniedAt(id: string, deniedAt: string | null): Promise<void> {
+  await run('UPDATE messaging_groups SET denied_at = $1 WHERE id = $2', [deniedAt, id]);
 }
 
 // ── Messaging Group Agents ──
@@ -119,37 +106,26 @@ export function setMessagingGroupDeniedAt(id: string, deniedAt: string | null): 
 /**
  * Wire a messaging group to an agent group. Also auto-creates the matching
  * `agent_destinations` row so the agent can deliver to this chat as a
- * target, not just reply to the origin. Without this, routing to chats that
- * aren't the session's origin (agent-shared sessions, cross-channel sends)
- * would require an operator to hand-insert destination rows every time.
- *
- * The destination row is skipped if one already exists for the same target,
- * so re-wiring is a no-op. The local_name uses the messaging group's `name`
- * field when set, falling back to `${channel_type}-${mg_id prefix}`, with
- * a numeric suffix to break collisions within the agent's namespace. This
- * mirrors the backfill logic in migration 004.
+ * target, not just reply to the origin.
  */
-export function createMessagingGroupAgent(mga: MessagingGroupAgent): void {
-  getDb()
-    .prepare(
-      `INSERT INTO messaging_group_agents (
-         id, messaging_group_id, agent_group_id,
-         engage_mode, engage_pattern, sender_scope, ignored_message_policy,
-         session_mode, priority, created_at
-       )
-       VALUES (
-         @id, @messaging_group_id, @agent_group_id,
-         @engage_mode, @engage_pattern, @sender_scope, @ignored_message_policy,
-         @session_mode, @priority, @created_at
-       )`,
-    )
-    .run(mga);
+export async function createMessagingGroupAgent(mga: MessagingGroupAgent): Promise<void> {
+  await run(
+    `INSERT INTO messaging_group_agents (
+       id, messaging_group_id, agent_group_id,
+       engage_mode, engage_pattern, sender_scope, ignored_message_policy,
+       session_mode, priority, created_at
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
+      mga.id, mga.messaging_group_id, mga.agent_group_id,
+      mga.engage_mode, mga.engage_pattern, mga.sender_scope, mga.ignored_message_policy,
+      mga.session_mode, mga.priority, mga.created_at,
+    ],
+  );
 
   // Auto-create an agent_destinations row so delivery's ACL doesn't block
   // outbound messages that target this chat. Guarded: when the agent-to-agent
-  // module isn't installed the table doesn't exist — skip silently. Without
-  // the module, the ACL check in delivery is also skipped (same guard), so
-  // channel sends still work.
+  // module isn't installed the table doesn't exist — skip silently.
   //
   // ⚠️  DESTINATION PROJECTION NOTE: this function only writes the central
   // `agent_destinations` row. It does NOT project into any running
@@ -157,31 +133,24 @@ export function createMessagingGroupAgent(mga: MessagingGroupAgent): void {
   // src/modules/agent-to-agent/db/agent-destinations.ts). In practice this
   // is fine because the only real callers are one-shot setup scripts
   // (setup/register.ts, scripts/init-first-agent.ts, /manage-channels
-  // skill) that run in a separate process from the host. Any already-
-  // running container for `mga.agent_group_id` will keep serving the
-  // stale projection until its next wake (idle timeout or next inbound
-  // message) at which point spawnContainer's writeDestinations call
-  // refreshes from central. If you call this from code that runs INSIDE
-  // the host process and need the refresh to happen immediately,
-  // explicitly call the module's `writeDestinations(mga.agent_group_id,
-  // <sessionId>)` afterwards.
-  if (!hasTable(getDb(), 'agent_destinations')) return;
+  // skill) that run in a separate process from the host.
+  if (!(await hasTable('agent_destinations'))) return;
 
-  const existing = getDestinationByTarget(mga.agent_group_id, 'channel', mga.messaging_group_id);
+  const existing = await getDestinationByTarget(mga.agent_group_id, 'channel', mga.messaging_group_id);
   if (existing) return;
 
-  const mg = getMessagingGroup(mga.messaging_group_id);
+  const mg = await getMessagingGroup(mga.messaging_group_id);
   if (!mg) return;
 
   const base = normalizeName(mg.name || `${mg.channel_type}-${mga.messaging_group_id.slice(0, 8)}`);
   let localName = base;
   let suffix = 2;
-  while (getDestinationByName(mga.agent_group_id, localName)) {
+  while (await getDestinationByName(mga.agent_group_id, localName)) {
     localName = `${base}-${suffix}`;
     suffix++;
   }
 
-  createDestination({
+  await createDestination({
     agent_group_id: mga.agent_group_id,
     local_name: localName,
     target_type: 'channel',
@@ -190,28 +159,28 @@ export function createMessagingGroupAgent(mga: MessagingGroupAgent): void {
   });
 }
 
-export function getMessagingGroupAgents(messagingGroupId: string): MessagingGroupAgent[] {
-  return getDb()
-    .prepare('SELECT * FROM messaging_group_agents WHERE messaging_group_id = ? ORDER BY priority DESC')
-    .all(messagingGroupId) as MessagingGroupAgent[];
+export async function getMessagingGroupAgents(messagingGroupId: string): Promise<MessagingGroupAgent[]> {
+  return all<MessagingGroupAgent>(
+    'SELECT * FROM messaging_group_agents WHERE messaging_group_id = $1 ORDER BY priority DESC',
+    [messagingGroupId],
+  );
 }
 
-export function getMessagingGroupAgentByPair(
+export async function getMessagingGroupAgentByPair(
   messagingGroupId: string,
   agentGroupId: string,
-): MessagingGroupAgent | undefined {
-  return getDb()
-    .prepare('SELECT * FROM messaging_group_agents WHERE messaging_group_id = ? AND agent_group_id = ?')
-    .get(messagingGroupId, agentGroupId) as MessagingGroupAgent | undefined;
+): Promise<MessagingGroupAgent | undefined> {
+  return get<MessagingGroupAgent>(
+    'SELECT * FROM messaging_group_agents WHERE messaging_group_id = $1 AND agent_group_id = $2',
+    [messagingGroupId, agentGroupId],
+  );
 }
 
-export function getMessagingGroupAgent(id: string): MessagingGroupAgent | undefined {
-  return getDb().prepare('SELECT * FROM messaging_group_agents WHERE id = ?').get(id) as
-    | MessagingGroupAgent
-    | undefined;
+export async function getMessagingGroupAgent(id: string): Promise<MessagingGroupAgent | undefined> {
+  return get<MessagingGroupAgent>('SELECT * FROM messaging_group_agents WHERE id = $1', [id]);
 }
 
-export function updateMessagingGroupAgent(
+export async function updateMessagingGroupAgent(
   id: string,
   updates: Partial<
     Pick<
@@ -219,34 +188,32 @@ export function updateMessagingGroupAgent(
       'engage_mode' | 'engage_pattern' | 'sender_scope' | 'ignored_message_policy' | 'session_mode' | 'priority'
     >
   >,
-): void {
+): Promise<void> {
   const fields: string[] = [];
-  const values: Record<string, unknown> = { id };
+  const values: unknown[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
     if (value !== undefined) {
-      fields.push(`${key} = @${key}`);
-      values[key] = value;
+      fields.push(`${key} = $${values.length + 1}`);
+      values.push(value);
     }
   }
   if (fields.length === 0) return;
 
-  getDb()
-    .prepare(`UPDATE messaging_group_agents SET ${fields.join(', ')} WHERE id = @id`)
-    .run(values);
+  values.push(id);
+  await run(`UPDATE messaging_group_agents SET ${fields.join(', ')} WHERE id = $${values.length}`, values);
 }
 
-export function deleteMessagingGroupAgent(id: string): void {
-  getDb().prepare('DELETE FROM messaging_group_agents WHERE id = ?').run(id);
+export async function deleteMessagingGroupAgent(id: string): Promise<void> {
+  await run('DELETE FROM messaging_group_agents WHERE id = $1', [id]);
 }
 
 /** Get all messaging groups wired to an agent group (reverse lookup). */
-export function getMessagingGroupsByAgentGroup(agentGroupId: string): MessagingGroup[] {
-  return getDb()
-    .prepare(
-      `SELECT mg.* FROM messaging_groups mg
-       JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id
-       WHERE mga.agent_group_id = ?`,
-    )
-    .all(agentGroupId) as MessagingGroup[];
+export async function getMessagingGroupsByAgentGroup(agentGroupId: string): Promise<MessagingGroup[]> {
+  return all<MessagingGroup>(
+    `SELECT mg.* FROM messaging_groups mg
+     JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id
+     WHERE mga.agent_group_id = $1`,
+    [agentGroupId],
+  );
 }

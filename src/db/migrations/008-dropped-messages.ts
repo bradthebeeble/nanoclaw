@@ -1,10 +1,8 @@
-import type Database from 'better-sqlite3';
-import type { Migration } from './index.js';
-
-export const migration008: Migration = {
+export const migration008 = {
   version: 8,
   name: 'dropped-messages',
-  up: (db: Database.Database) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up: (db: any) => {
     db.exec(`
       CREATE TABLE IF NOT EXISTS unregistered_senders (
         channel_type    TEXT NOT NULL,

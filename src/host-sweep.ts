@@ -133,7 +133,7 @@ async function sweep(): Promise<void> {
   if (!running) return;
 
   try {
-    const sessions = getActiveSessions();
+    const sessions = await getActiveSessions();
     for (const session of sessions) {
       await sweepSession(session);
     }
@@ -145,7 +145,7 @@ async function sweep(): Promise<void> {
 }
 
 async function sweepSession(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
 
   const inPath = inboundDbPath(agentGroup.id, session.id);

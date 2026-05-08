@@ -1,9 +1,11 @@
 /**
  * Tests for the v2 channel adapter registry and integration with host.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import fs from 'fs';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import type { Pool } from 'pg';
 
 import type { ChannelAdapter, ChannelSetup, InboundMessage, OutboundMessage } from './adapter.js';
 
@@ -118,23 +120,42 @@ describe('channel registry', () => {
 });
 
 describe('channel + router integration', () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: Pool;
+
+  beforeAll(async () => {
+    container = await new PostgreSqlContainer().start();
+    const { initTestDb, runMigrations } = await import('../db/index.js');
+    pool = initTestDb({
+      host: container.getHost(),
+      port: container.getMappedPort(5432),
+      database: container.getDatabase(),
+      user: container.getUsername(),
+      password: container.getPassword(),
+    });
+    await runMigrations(pool);
+  }, 120_000);
+
+  afterAll(async () => {
+    const { closeDb } = await import('../db/index.js');
+    await closeDb();
+    await container.stop();
+  });
+
   beforeEach(async () => {
     if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
     fs.mkdirSync(TEST_DIR, { recursive: true });
 
-    const { initTestDb, runMigrations, createAgentGroup, createMessagingGroup, createMessagingGroupAgent } =
-      await import('../db/index.js');
-    const db = initTestDb();
-    runMigrations(db);
+    const { createAgentGroup, createMessagingGroup, createMessagingGroupAgent } = await import('../db/index.js');
 
-    createAgentGroup({
+    await createAgentGroup({
       id: 'ag-1',
       name: 'Test Agent',
       folder: 'test-agent',
       agent_provider: null,
       created_at: now(),
     });
-    createMessagingGroup({
+    await createMessagingGroup({
       id: 'mg-1',
       channel_type: 'mock',
       platform_id: 'chan-100',
@@ -143,7 +164,7 @@ describe('channel + router integration', () => {
       unknown_sender_policy: 'public',
       created_at: now(),
     });
-    createMessagingGroupAgent({
+    await createMessagingGroupAgent({
       id: 'mga-1',
       messaging_group_id: 'mg-1',
       agent_group_id: 'ag-1',
@@ -158,9 +179,13 @@ describe('channel + router integration', () => {
   });
 
   afterEach(async () => {
-    const { closeDb } = await import('../db/index.js');
-    closeDb();
     if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+    await pool.query(
+      `TRUNCATE TABLE agent_groups, messaging_groups, users,
+         sessions, messaging_group_agents, user_roles, agent_group_members,
+         user_dms, agent_destinations, pending_approvals, pending_questions,
+         pending_sender_approvals, pending_channel_approvals CASCADE`,
+    );
   });
 
   it('should route inbound message from adapter to session DB', async () => {
@@ -184,7 +209,7 @@ describe('channel + router integration', () => {
     });
 
     // Verify session was created and message written
-    const session = findSession('mg-1', null);
+    const session = await findSession('mg-1', null);
     expect(session).toBeDefined();
 
     const dbPath = inboundDbPath('ag-1', session!.id);

@@ -91,14 +91,19 @@ function extractAndUpsertUser(event: InboundEvent): string | null {
   if (!rawHandle) return null;
 
   const userId = rawHandle.includes(':') ? rawHandle : `${event.channelType}:${rawHandle}`;
-  if (!getUser(userId)) {
-    upsertUser({
-      id: userId,
-      kind: event.channelType,
-      display_name: senderName ?? null,
-      created_at: new Date().toISOString(),
-    });
-  }
+  // Fire-and-forget: upsert user is best-effort. getUser/upsertUser are async
+  // but SenderResolverFn is typed sync — the userId is derived from the event
+  // payload and returned immediately; DB persistence is a side effect.
+  void (async () => {
+    if (!(await getUser(userId))) {
+      await upsertUser({
+        id: userId,
+        kind: event.channelType,
+        display_name: senderName ?? null,
+        created_at: new Date().toISOString(),
+      });
+    }
+  })();
   return userId;
 }
 
@@ -136,7 +141,7 @@ function handleUnknownSender(
       userId,
       accessReason,
     });
-    recordDroppedMessage(dropRecord);
+    void recordDroppedMessage(dropRecord);
     return;
   }
 
@@ -147,7 +152,7 @@ function handleUnknownSender(
       userId,
       accessReason,
     });
-    recordDroppedMessage(dropRecord);
+    void recordDroppedMessage(dropRecord);
     // Fire-and-forget; pick-approver + delivery + row-insert are all async.
     // If it fails it logs internally — the user's message still stays dropped
     // either way. Requires a resolved userId (senderResolver populates users
@@ -170,7 +175,7 @@ function handleUnknownSender(
 
 setSenderResolver(extractAndUpsertUser);
 
-setAccessGate((event, userId, mg, agentGroupId): AccessGateResult => {
+setAccessGate(async (event, userId, mg, agentGroupId): Promise<AccessGateResult> => {
   // Public channels skip the access check entirely.
   if (mg.unknown_sender_policy === 'public') {
     return { allowed: true };
@@ -181,7 +186,7 @@ setAccessGate((event, userId, mg, agentGroupId): AccessGateResult => {
     return { allowed: false, reason: 'unknown_user' };
   }
 
-  const decision = canAccessAgentGroup(userId, agentGroupId);
+  const decision = await canAccessAgentGroup(userId, agentGroupId);
   if (decision.allowed) {
     return { allowed: true };
   }
@@ -199,10 +204,10 @@ setAccessGate((event, userId, mg, agentGroupId): AccessGateResult => {
  * canAccessAgentGroup accepts (owner, admin, or group member).
  */
 setSenderScopeGate(
-  (_event: InboundEvent, userId: string | null, _mg: MessagingGroup, agent: MessagingGroupAgent): AccessGateResult => {
+  async (_event: InboundEvent, userId: string | null, _mg: MessagingGroup, agent: MessagingGroupAgent): Promise<AccessGateResult> => {
     if (agent.sender_scope === 'all') return { allowed: true };
     if (!userId) return { allowed: false, reason: 'unknown_user_scope' };
-    const decision = canAccessAgentGroup(userId, agent.agent_group_id);
+    const decision = await canAccessAgentGroup(userId, agent.agent_group_id);
     if (decision.allowed) return { allowed: true };
     return { allowed: false, reason: `sender_scope_${decision.reason}` };
   },
@@ -223,7 +228,7 @@ setSenderScopeGate(
  * fresh card per ACTION-ITEMS item 5 "no denial persistence").
  */
 async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<boolean> {
-  const row = getPendingSenderApproval(payload.questionId);
+  const row = await getPendingSenderApproval(payload.questionId);
   if (!row) return false;
 
   // payload.userId is the raw platform userId (e.g. "6037840640"); namespace it
@@ -233,7 +238,7 @@ async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<b
   // via stolen card forwarding.
   const clickerId = payload.userId ? `${payload.channelType}:${payload.userId}` : null;
   const isAuthorized =
-    clickerId !== null && (clickerId === row.approver_user_id || hasAdminPrivilege(clickerId, row.agent_group_id));
+    clickerId !== null && (clickerId === row.approver_user_id || (await hasAdminPrivilege(clickerId, row.agent_group_id)));
   if (!isAuthorized) {
     log.warn('Unknown-sender approval click rejected — unauthorized clicker', {
       approvalId: row.id,
@@ -246,7 +251,7 @@ async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<b
   const approved = payload.value === 'approve';
 
   if (approved) {
-    addMember({
+    await addMember({
       user_id: row.sender_identity,
       agent_group_id: row.agent_group_id,
       added_by: approverId,
@@ -261,7 +266,7 @@ async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<b
 
     // Clear the pending row BEFORE re-routing so the gate check on the
     // second attempt doesn't see the in-flight row and short-circuit.
-    deletePendingSenderApproval(row.id);
+    await deletePendingSenderApproval(row.id);
 
     try {
       const event = JSON.parse(row.original_message) as InboundEvent;
@@ -278,7 +283,7 @@ async function handleSenderApprovalResponse(payload: ResponsePayload): Promise<b
     agentGroupId: row.agent_group_id,
     approverId,
   });
-  deletePendingSenderApproval(row.id);
+  await deletePendingSenderApproval(row.id);
   return true;
 }
 
@@ -305,12 +310,12 @@ setChannelRequestGate(async (mg, event) => {
  *   reject          — set denied_at, delete pending row
  */
 async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<boolean> {
-  const row = getPendingChannelApproval(payload.questionId);
+  const row = await getPendingChannelApproval(payload.questionId);
   if (!row) return false;
 
   const clickerId = payload.userId ? `${payload.channelType}:${payload.userId}` : null;
   const isAuthorized =
-    clickerId !== null && (clickerId === row.approver_user_id || hasAdminPrivilege(clickerId, row.agent_group_id));
+    clickerId !== null && (clickerId === row.approver_user_id || (await hasAdminPrivilege(clickerId, row.agent_group_id)));
   if (!isAuthorized) {
     log.warn('Channel registration click rejected — unauthorized clicker', {
       messagingGroupId: row.messaging_group_id,
@@ -323,8 +328,8 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
 
   // ── Reject / Cancel ──
   if (payload.value === REJECT_VALUE) {
-    setMessagingGroupDeniedAt(row.messaging_group_id, new Date().toISOString());
-    deletePendingChannelApproval(row.messaging_group_id);
+    await setMessagingGroupDeniedAt(row.messaging_group_id, new Date().toISOString());
+    await deletePendingChannelApproval(row.messaging_group_id);
     log.info('Channel registration denied', {
       messagingGroupId: row.messaging_group_id,
       approverId,
@@ -346,10 +351,10 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
     const adapter = getDeliveryAdapter();
     if (!adapter) return true;
 
-    const agentGroups = getAllAgentGroups();
+    const agentGroups = await getAllAgentGroups();
     const options = buildAgentSelectionOptions(agentGroups);
     const title = '📋 Choose an agent';
-    updatePendingChannelApprovalCard(row.messaging_group_id, title, JSON.stringify(options));
+    await updatePendingChannelApprovalCard(row.messaging_group_id, title, JSON.stringify(options));
 
     try {
       await adapter.deliver(
@@ -422,13 +427,13 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
 
   if (payload.value.startsWith(CONNECT_PREFIX)) {
     targetAgentGroupId = payload.value.slice(CONNECT_PREFIX.length);
-    const ag = getAgentGroup(targetAgentGroupId);
+    const ag = await getAgentGroup(targetAgentGroupId);
     if (!ag) {
       log.error('Channel registration: target agent group no longer exists', {
         messagingGroupId: row.messaging_group_id,
         targetAgentGroupId,
       });
-      deletePendingChannelApproval(row.messaging_group_id);
+      await deletePendingChannelApproval(row.messaging_group_id);
       return true;
     }
   } else {
@@ -448,7 +453,7 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
       messagingGroupId: row.messaging_group_id,
       err,
     });
-    deletePendingChannelApproval(row.messaging_group_id);
+    await deletePendingChannelApproval(row.messaging_group_id);
     return true;
   }
 
@@ -457,7 +462,7 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
   const engagePattern = isGroup ? null : '.';
 
   const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  createMessagingGroupAgent({
+  await createMessagingGroupAgent({
     id: mgaId,
     messaging_group_id: row.messaging_group_id,
     agent_group_id: targetAgentGroupId,
@@ -479,7 +484,7 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
 
   const senderUserId = extractAndUpsertUser(event);
   if (senderUserId) {
-    addMember({
+    await addMember({
       user_id: senderUserId,
       agent_group_id: targetAgentGroupId,
       added_by: approverId,
@@ -487,7 +492,7 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
     });
   }
 
-  deletePendingChannelApproval(row.messaging_group_id);
+  await deletePendingChannelApproval(row.messaging_group_id);
 
   try {
     await routeInbound(event);
@@ -529,10 +534,10 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
     return true;
   }
 
-  const row = getPendingChannelApproval(pending.channelMgId);
+  const row = await getPendingChannelApproval(pending.channelMgId);
   if (!row) return true;
 
-  const ag = createNewAgentGroup(text);
+  const ag = await createNewAgentGroup(text);
   log.info('Channel registration: new agent group created', {
     messagingGroupId: row.messaging_group_id,
     agentGroupId: ag.id,
@@ -548,7 +553,7 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
       messagingGroupId: row.messaging_group_id,
       err,
     });
-    deletePendingChannelApproval(row.messaging_group_id);
+    await deletePendingChannelApproval(row.messaging_group_id);
     return true;
   }
 
@@ -557,7 +562,7 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
   const engagePattern = isGroup ? null : '.';
 
   const mgaId = `mga-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  createMessagingGroupAgent({
+  await createMessagingGroupAgent({
     id: mgaId,
     messaging_group_id: row.messaging_group_id,
     agent_group_id: ag.id,
@@ -579,7 +584,7 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
 
   const senderUserId = extractAndUpsertUser(originalEvent);
   if (senderUserId) {
-    addMember({
+    await addMember({
       user_id: senderUserId,
       agent_group_id: ag.id,
       added_by: userId,
@@ -587,7 +592,7 @@ setMessageInterceptor(async (event: InboundEvent): Promise<boolean> => {
     });
   }
 
-  deletePendingChannelApproval(row.messaging_group_id);
+  await deletePendingChannelApproval(row.messaging_group_id);
 
   try {
     await routeInbound(originalEvent);

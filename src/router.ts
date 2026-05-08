@@ -74,7 +74,7 @@ export type AccessGateFn = (
   userId: string | null,
   mg: MessagingGroup,
   agentGroupId: string,
-) => AccessGateResult;
+) => AccessGateResult | Promise<AccessGateResult>;
 
 let accessGate: AccessGateFn | null = null;
 
@@ -97,7 +97,7 @@ export type SenderScopeGateFn = (
   userId: string | null,
   mg: MessagingGroup,
   agent: MessagingGroupAgent,
-) => AccessGateResult;
+) => AccessGateResult | Promise<AccessGateResult>;
 
 let senderScopeGate: SenderScopeGateFn | null = null;
 
@@ -173,7 +173,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   //    single query. Cheap short-circuit for the common "unwired channel"
   //    case — one DB read and we're out, no auto-create, no sender
   //    resolution, no log spam.
-  const found = getMessagingGroupWithAgentCount(event.channelType, event.platformId);
+  const found = await getMessagingGroupWithAgentCount(event.channelType, event.platformId);
 
   let mg: MessagingGroup;
   let agentCount: number;
@@ -193,7 +193,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
       denied_at: null,
       created_at: new Date().toISOString(),
     };
-    createMessagingGroup(mg);
+    await createMessagingGroup(mg);
     log.info('Auto-created messaging group', {
       id: mgId,
       channelType: event.channelType,
@@ -218,7 +218,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
     }
 
     const parsed = safeParseContent(event.message.content);
-    recordDroppedMessage({
+    await recordDroppedMessage({
       channel_type: event.channelType,
       platform_id: event.platformId,
       user_id: null,
@@ -253,7 +253,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
 
   // 3. Fetch wired agents in full (we already know the count is > 0; now
   //    we need their actual rows for fan-out).
-  const agents = getMessagingGroupAgents(mg.id);
+  const agents = await getMessagingGroupAgents(mg.id);
 
   // 4. Fan-out: evaluate each wired agent independently against engage_mode,
   //    sender_scope, and access gate. An agent that engages gets its own
@@ -275,13 +275,15 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   let subscribed = false;
 
   for (const agent of agents) {
-    const agentGroup = getAgentGroup(agent.agent_group_id);
+    const agentGroup = await getAgentGroup(agent.agent_group_id);
     if (!agentGroup) continue;
 
-    const engages = evaluateEngage(agent, messageText, isMention, mg, event.threadId);
+    const engages = await evaluateEngage(agent, messageText, isMention, mg, event.threadId);
 
-    const accessOk = engages && (!accessGate || accessGate(event, userId, mg, agent.agent_group_id).allowed);
-    const scopeOk = engages && (!senderScopeGate || senderScopeGate(event, userId, mg, agent).allowed);
+    const accessResult = !engages || !accessGate ? { allowed: true } : await accessGate(event, userId, mg, agent.agent_group_id);
+    const scopeResult = !engages || !senderScopeGate ? { allowed: true } : await senderScopeGate(event, userId, mg, agent);
+    const accessOk = engages && accessResult.allowed;
+    const scopeOk = engages && scopeResult.allowed;
 
     if (engages && accessOk && scopeOk) {
       await deliverToAgent(agent, agentGroup, mg, event, userId, adapter?.supportsThreads === true, true);
@@ -329,7 +331,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   }
 
   if (engagedCount + accumulatedCount === 0) {
-    recordDroppedMessage({
+    await recordDroppedMessage({
       channel_type: event.channelType,
       platform_id: event.platformId,
       user_id: userId,
@@ -361,13 +363,13 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
  *                      a thread has engaged us once, follow-ups arrive
  *                      with no mention and should still fire.
  */
-function evaluateEngage(
+async function evaluateEngage(
   agent: MessagingGroupAgent,
   text: string,
   isMention: boolean,
   mg: MessagingGroup,
   threadId: string | null,
-): boolean {
+): Promise<boolean> {
   switch (agent.engage_mode) {
     case 'pattern': {
       const pat = agent.engage_pattern ?? '.';
@@ -386,7 +388,7 @@ function evaluateEngage(
       // Sticky follow-up: session already exists for this (agent, mg, thread)
       // — the thread was activated before, keep firing.
       if (mg.is_group === 0) return false; // DMs never use mention-sticky sensibly
-      const existing = findSessionForAgent(agent.agent_group_id, mg.id, threadId);
+      const existing = await findSessionForAgent(agent.agent_group_id, mg.id, threadId);
       return existing !== undefined;
     }
     default:
@@ -412,7 +414,7 @@ async function deliverToAgent(
     effectiveSessionMode = 'per-thread';
   }
 
-  const { session, created } = resolveSession(agent.agent_group_id, mg.id, event.threadId, effectiveSessionMode);
+  const { session, created } = await resolveSession(agent.agent_group_id, mg.id, event.threadId, effectiveSessionMode);
 
   // The inbound row's (channel_type, platform_id, thread_id) is the address
   // the agent's reply will be delivered to. Normally it mirrors the source
@@ -428,7 +430,7 @@ async function deliverToAgent(
   // Filtered commands are dropped silently. Denied admin commands get a
   // permission-denied response written directly to messages_out.
   if (event.message.kind === 'chat' || event.message.kind === 'chat-sdk') {
-    const gate = gateCommand(event.message.content, userId, agent.agent_group_id);
+    const gate = await gateCommand(event.message.content, userId, agent.agent_group_id);
     if (gate.action === 'filter') {
       log.debug('Filtered command dropped by gate', { agentGroupId: agent.agent_group_id });
       return;
@@ -473,7 +475,7 @@ async function deliverToAgent(
     // Typing indicator + wake are only for the engaged branch; accumulated
     // messages sit silently until a real trigger fires.
     startTypingRefresh(session.id, session.agent_group_id, event.channelType, event.platformId, event.threadId);
-    const freshSession = getSession(session.id);
+    const freshSession = await getSession(session.id);
     if (freshSession) {
       const woke = await wakeContainer(freshSession);
       // wakeContainer never throws — it returns false on transient spawn

@@ -14,7 +14,9 @@
  *  - No agent groups configured: no card, no row
  */
 import fs from 'fs';
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import type { Pool } from 'pg';
 
 import { initTestDb, closeDb, runMigrations } from '../../db/index.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
@@ -36,22 +38,6 @@ vi.mock('../../delivery.js', () => ({
   getDeliveryAdapter: () => ({ deliver: deliverMock }),
 }));
 
-// Mock ensureUserDm — look up the owner's preconfigured DM row instead of
-// hitting a real openDM RPC.
-vi.mock('./user-dm.js', () => ({
-  ensureUserDm: vi.fn(async (userId: string) => {
-    const { getDb } = await import('../../db/connection.js');
-    const row = getDb()
-      .prepare(
-        `SELECT mg.* FROM messaging_groups mg
-           JOIN user_dms ud ON ud.messaging_group_id = mg.id
-          WHERE ud.user_id = ?`,
-      )
-      .get(userId);
-    return row;
-  }),
-}));
-
 vi.mock('../../config.js', async () => {
   const actual = await vi.importActual('../../config.js');
   return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-channel-approval' };
@@ -63,19 +49,52 @@ function now() {
   return new Date().toISOString();
 }
 
+let container: StartedPostgreSqlContainer;
+let pool: Pool;
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer().start();
+  pool = initTestDb({
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    database: container.getDatabase(),
+    user: container.getUsername(),
+    password: container.getPassword(),
+  });
+  await runMigrations(pool);
+}, 120_000);
+
+afterAll(async () => {
+  await closeDb();
+  await container.stop();
+});
+
+// Mock ensureUserDm — look up the owner's preconfigured DM row instead of
+// hitting a real openDM RPC. Uses the shared pool directly.
+vi.mock('./user-dm.js', () => ({
+  ensureUserDm: vi.fn(async (userId: string) => {
+    const { getPool } = await import('../../db/connection.js');
+    const result = await getPool().query<{ id: string; channel_type: string; platform_id: string; is_group: number; unknown_sender_policy: string; created_at: string; denied_at: string | null; name: string }>(
+      `SELECT mg.* FROM messaging_groups mg
+         JOIN user_dms ud ON ud.messaging_group_id = mg.id
+        WHERE ud.user_id = $1`,
+      [userId],
+    );
+    return result.rows[0] ?? null;
+  }),
+}));
+
 beforeEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
-  const db = initTestDb();
-  runMigrations(db);
 
   await import('./index.js'); // register hooks
 
   // Base fixtures: one agent group + owner with a DM on 'telegram'.
-  createAgentGroup({ id: 'ag-1', name: 'Andy', folder: 'andy', agent_provider: null, created_at: now() });
+  await createAgentGroup({ id: 'ag-1', name: 'Andy', folder: 'andy', agent_provider: null, created_at: now() });
 
-  upsertUser({ id: 'telegram:owner', kind: 'telegram', display_name: 'Owner', created_at: now() });
-  grantRole({
+  await upsertUser({ id: 'telegram:owner', kind: 'telegram', display_name: 'Owner', created_at: now() });
+  await grantRole({
     user_id: 'telegram:owner',
     role: 'owner',
     agent_group_id: null,
@@ -84,7 +103,7 @@ beforeEach(async () => {
   });
 
   // Pre-seed owner's DM messaging group + user_dms mapping.
-  createMessagingGroup({
+  await createMessagingGroup({
     id: 'mg-dm-owner',
     channel_type: 'telegram',
     platform_id: 'dm-owner',
@@ -93,20 +112,23 @@ beforeEach(async () => {
     unknown_sender_policy: 'public',
     created_at: now(),
   });
-  const { getDb } = await import('../../db/connection.js');
-  getDb()
-    .prepare(
-      `INSERT INTO user_dms (user_id, channel_type, messaging_group_id, resolved_at)
-       VALUES (?, ?, ?, ?)`,
-    )
-    .run('telegram:owner', 'telegram', 'mg-dm-owner', now());
+  await pool.query(
+    `INSERT INTO user_dms (user_id, channel_type, messaging_group_id, resolved_at)
+     VALUES ($1, $2, $3, $4)`,
+    ['telegram:owner', 'telegram', 'mg-dm-owner', now()],
+  );
 
   deliverMock.mockClear();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  await pool.query(
+    `TRUNCATE TABLE agent_groups, messaging_groups, users,
+       sessions, messaging_group_agents, user_roles, agent_group_members,
+       user_dms, agent_destinations, pending_approvals, pending_questions,
+       pending_sender_approvals, pending_channel_approvals CASCADE`,
+  );
 });
 
 function groupMention(platformId: string, text = '@bot hello') {
@@ -158,8 +180,7 @@ describe('unknown-channel registration flow', () => {
     expect(connectOption).toBeDefined();
     expect(connectOption.label).toContain('Andy');
 
-    const { getDb } = await import('../../db/connection.js');
-    const rows = getDb().prepare('SELECT * FROM pending_channel_approvals').all() as Array<{
+    const rows = (await pool.query('SELECT * FROM pending_channel_approvals')).rows as Array<{
       messaging_group_id: string;
     }>;
     expect(rows).toHaveLength(1);
@@ -171,9 +192,8 @@ describe('unknown-channel registration flow', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(deliverMock).toHaveBeenCalledTimes(1);
-    const { getDb } = await import('../../db/connection.js');
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
-    expect(count).toBe(1);
+    const { rows } = await pool.query<{ c: number }>('SELECT COUNT(*) AS c FROM pending_channel_approvals');
+    expect(Number(rows[0].c)).toBe(1);
   });
 
   it('dedups a second mention while the card is pending', async () => {
@@ -184,9 +204,8 @@ describe('unknown-channel registration flow', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(deliverMock).toHaveBeenCalledTimes(1);
-    const { getDb } = await import('../../db/connection.js');
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
-    expect(count).toBe(1);
+    const { rows } = await pool.query<{ c: number }>('SELECT COUNT(*) AS c FROM pending_channel_approvals');
+    expect(Number(rows[0].c)).toBe(1);
   });
 
   it('approve → creates wiring, admits triggering sender, replays', async () => {
@@ -198,10 +217,10 @@ describe('unknown-channel registration flow', () => {
     await routeInbound(groupMention('chat-approve'));
     await new Promise((r) => setTimeout(r, 10));
 
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
-    };
+    const { rows: pendingRows } = await pool.query<{ messaging_group_id: string }>(
+      'SELECT messaging_group_id FROM pending_channel_approvals',
+    );
+    const pending = pendingRows[0];
     expect(pending).toBeDefined();
 
     // Owner clicks "Connect to Andy" (single-agent card).
@@ -218,15 +237,17 @@ describe('unknown-channel registration flow', () => {
     }
 
     // Wiring created with defaults.
-    const mga = getDb()
-      .prepare('SELECT * FROM messaging_group_agents WHERE messaging_group_id = ?')
-      .get(pending.messaging_group_id) as {
+    const { rows: mgaRows } = await pool.query<{
       engage_mode: string;
       engage_pattern: string | null;
       sender_scope: string;
       ignored_message_policy: string;
       agent_group_id: string;
-    };
+    }>(
+      'SELECT * FROM messaging_group_agents WHERE messaging_group_id = $1',
+      [pending.messaging_group_id],
+    );
+    const mga = mgaRows[0];
     expect(mga).toBeDefined();
     expect(mga.engage_mode).toBe('mention-sticky'); // group (threadId != null)
     expect(mga.engage_pattern).toBeNull();
@@ -236,15 +257,17 @@ describe('unknown-channel registration flow', () => {
 
     // Triggering sender auto-admitted so sender_scope='known' doesn't
     // bounce the replay into sender-approval.
-    const member = getDb()
-      .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('telegram:caller', 'ag-1');
-    expect(member).toBeDefined();
+    const { rows: memberRows } = await pool.query(
+      'SELECT 1 AS x FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2',
+      ['telegram:caller', 'ag-1'],
+    );
+    expect(memberRows[0]).toBeDefined();
 
     // Pending row cleared and container woken via replay.
-    const stillPending = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number })
-      .c;
-    expect(stillPending).toBe(0);
+    const { rows: stillPendingRows } = await pool.query<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM pending_channel_approvals',
+    );
+    expect(Number(stillPendingRows[0].c)).toBe(0);
     expect(wakeContainer).toHaveBeenCalled();
   });
 
@@ -255,10 +278,10 @@ describe('unknown-channel registration flow', () => {
     await routeInbound(dmEvent('dm-approve-user'));
     await new Promise((r) => setTimeout(r, 10));
 
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
-    };
+    const { rows: pendingRows } = await pool.query<{ messaging_group_id: string }>(
+      'SELECT messaging_group_id FROM pending_channel_approvals',
+    );
+    const pending = pendingRows[0];
 
     for (const handler of getResponseHandlers()) {
       const claimed = await handler({
@@ -272,11 +295,12 @@ describe('unknown-channel registration flow', () => {
       if (claimed) break;
     }
 
-    const mga = getDb()
-      .prepare('SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE messaging_group_id = ?')
-      .get(pending.messaging_group_id) as { engage_mode: string; engage_pattern: string };
-    expect(mga.engage_mode).toBe('pattern');
-    expect(mga.engage_pattern).toBe('.');
+    const { rows: mgaRows } = await pool.query<{ engage_mode: string; engage_pattern: string }>(
+      'SELECT engage_mode, engage_pattern FROM messaging_group_agents WHERE messaging_group_id = $1',
+      [pending.messaging_group_id],
+    );
+    expect(mgaRows[0].engage_mode).toBe('pattern');
+    expect(mgaRows[0].engage_pattern).toBe('.');
   });
 
   it('deny → sets denied_at; future mentions drop silently without a second card', async () => {
@@ -285,10 +309,10 @@ describe('unknown-channel registration flow', () => {
 
     await routeInbound(groupMention('chat-deny'));
     await new Promise((r) => setTimeout(r, 10));
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
-    };
+    const { rows: pendingRows } = await pool.query<{ messaging_group_id: string }>(
+      'SELECT messaging_group_id FROM pending_channel_approvals',
+    );
+    const pending = pendingRows[0];
 
     for (const handler of getResponseHandlers()) {
       const claimed = await handler({
@@ -303,24 +327,24 @@ describe('unknown-channel registration flow', () => {
     }
 
     // denied_at set, pending row cleared, no wiring.
-    const mg = getMessagingGroupByPlatform('telegram', 'chat-deny');
+    const mg = await getMessagingGroupByPlatform('telegram', 'chat-deny');
     expect(mg?.denied_at).not.toBeNull();
     expect(mg?.denied_at).toBeTruthy();
-    const mgaCount = (
-      getDb()
-        .prepare('SELECT COUNT(*) AS c FROM messaging_group_agents WHERE messaging_group_id = ?')
-        .get(pending.messaging_group_id) as { c: number }
-    ).c;
-    expect(mgaCount).toBe(0);
+    const { rows: mgaCountRows } = await pool.query<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM messaging_group_agents WHERE messaging_group_id = $1',
+      [pending.messaging_group_id],
+    );
+    expect(Number(mgaCountRows[0].c)).toBe(0);
 
     // A follow-up mention on the denied channel: no new card, no new pending row.
     deliverMock.mockClear();
     await routeInbound(groupMention('chat-deny', '@bot please'));
     await new Promise((r) => setTimeout(r, 10));
     expect(deliverMock).not.toHaveBeenCalled();
-    const stillPending = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number })
-      .c;
-    expect(stillPending).toBe(0);
+    const { rows: stillPendingRows } = await pool.query<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM pending_channel_approvals',
+    );
+    expect(Number(stillPendingRows[0].c)).toBe(0);
   });
 
   it('rejects clicks from an unauthorized user (prevents self-admit via forwarded card)', async () => {
@@ -329,10 +353,10 @@ describe('unknown-channel registration flow', () => {
 
     await routeInbound(groupMention('chat-unauth'));
     await new Promise((r) => setTimeout(r, 10));
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT messaging_group_id FROM pending_channel_approvals').get() as {
-      messaging_group_id: string;
-    };
+    const { rows: pendingRows } = await pool.query<{ messaging_group_id: string }>(
+      'SELECT messaging_group_id FROM pending_channel_approvals',
+    );
+    const pending = pendingRows[0];
 
     for (const handler of getResponseHandlers()) {
       const claimed = await handler({
@@ -347,45 +371,47 @@ describe('unknown-channel registration flow', () => {
     }
 
     // No wiring created, pending row preserved so a real approver can act on it.
-    const mgaCount = (
-      getDb()
-        .prepare('SELECT COUNT(*) AS c FROM messaging_group_agents WHERE messaging_group_id = ?')
-        .get(pending.messaging_group_id) as { c: number }
-    ).c;
-    expect(mgaCount).toBe(0);
-    const stillPending = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number })
-      .c;
-    expect(stillPending).toBe(1);
+    const { rows: mgaCountRows } = await pool.query<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM messaging_group_agents WHERE messaging_group_id = $1',
+      [pending.messaging_group_id],
+    );
+    expect(Number(mgaCountRows[0].c)).toBe(0);
+    const { rows: stillPendingRows } = await pool.query<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM pending_channel_approvals',
+    );
+    expect(Number(stillPendingRows[0].c)).toBe(1);
   });
 });
 
 describe('no-owner / no-agent failure modes', () => {
   it('no owner → no card, no pending row (fresh-install bootstrap path)', async () => {
     // Wipe the owner grant set up in the outer beforeEach.
-    const { getDb } = await import('../../db/connection.js');
-    getDb().prepare('DELETE FROM user_roles').run();
+    await pool.query('DELETE FROM user_roles');
 
     const { routeInbound } = await import('../../router.js');
     await routeInbound(groupMention('chat-noowner'));
     await new Promise((r) => setTimeout(r, 10));
 
     expect(deliverMock).not.toHaveBeenCalled();
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
-    expect(count).toBe(0);
+    const { rows } = await pool.query<{ c: number }>('SELECT COUNT(*) AS c FROM pending_channel_approvals');
+    expect(Number(rows[0].c)).toBe(0);
   });
 
   it('no agent groups → no card, no pending row', async () => {
-    const { getDb } = await import('../../db/connection.js');
-    // Drop foreign-key-dependent rows first, then the agent group itself.
-    getDb().prepare('DELETE FROM user_roles').run();
-    getDb().prepare('DELETE FROM agent_groups').run();
+    // Drop everything that refs agent_groups (CASCADE handles transitivity).
+    await pool.query(
+      `TRUNCATE TABLE agent_groups, messaging_groups, users,
+         sessions, messaging_group_agents, user_roles, agent_group_members,
+         user_dms, agent_destinations, pending_approvals, pending_questions,
+         pending_sender_approvals, pending_channel_approvals CASCADE`,
+    );
 
     const { routeInbound } = await import('../../router.js');
     await routeInbound(groupMention('chat-noagent'));
     await new Promise((r) => setTimeout(r, 10));
 
     expect(deliverMock).not.toHaveBeenCalled();
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_channel_approvals').get() as { c: number }).c;
-    expect(count).toBe(0);
+    const { rows } = await pool.query<{ c: number }>('SELECT COUNT(*) AS c FROM pending_channel_approvals');
+    expect(Number(rows[0].c)).toBe(0);
   });
 });

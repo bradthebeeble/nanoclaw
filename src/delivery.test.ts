@@ -10,7 +10,9 @@
  */
 import Database from 'better-sqlite3';
 import fs from 'fs';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import type { Pool } from 'pg';
 
 vi.mock('./container-runner.js', () => ({
   wakeContainer: vi.fn().mockResolvedValue(undefined),
@@ -34,15 +36,50 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function seedAgentAndChannel(): void {
-  createAgentGroup({
+let container: StartedPostgreSqlContainer;
+let pool: Pool;
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer().start();
+  pool = initTestDb({
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    database: container.getDatabase(),
+    user: container.getUsername(),
+    password: container.getPassword(),
+  });
+  await runMigrations(pool);
+}, 120_000);
+
+afterAll(async () => {
+  await closeDb();
+  await container.stop();
+});
+
+beforeEach(() => {
+  if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  fs.mkdirSync(TEST_DIR, { recursive: true });
+});
+
+afterEach(async () => {
+  if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  await pool.query(
+    `TRUNCATE TABLE agent_groups, messaging_groups, users,
+       sessions, messaging_group_agents, user_roles, agent_group_members,
+       user_dms, agent_destinations, pending_approvals, pending_questions,
+       pending_sender_approvals, pending_channel_approvals CASCADE`,
+  );
+});
+
+async function seedAgentAndChannel(): Promise<void> {
+  await createAgentGroup({
     id: 'ag-1',
     name: 'Test Agent',
     folder: 'test-agent',
     agent_provider: null,
     created_at: now(),
   });
-  createMessagingGroup({
+  await createMessagingGroup({
     id: 'mg-1',
     channel_type: 'telegram',
     platform_id: 'telegram:123',
@@ -62,22 +99,10 @@ function insertOutbound(agentGroupId: string, sessionId: string, msgId: string):
   db.close();
 }
 
-beforeEach(() => {
-  if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
-  fs.mkdirSync(TEST_DIR, { recursive: true });
-  const db = initTestDb();
-  runMigrations(db);
-});
-
-afterEach(() => {
-  closeDb();
-  if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
-});
-
 describe('deliverSessionMessages — concurrent invocations', () => {
   it('delivers a message exactly once when active and sweep polls overlap', async () => {
-    seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    await seedAgentAndChannel();
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     insertOutbound('ag-1', session.id, 'out-1');
 
     const calls: string[] = [];
@@ -99,8 +124,8 @@ describe('deliverSessionMessages — concurrent invocations', () => {
   });
 
   it('still delivers on a subsequent call after the first finishes', async () => {
-    seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    await seedAgentAndChannel();
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     insertOutbound('ag-1', session.id, 'out-first');
 
     const calls: string[] = [];
@@ -126,8 +151,8 @@ describe('deliverSessionMessages — concurrent invocations', () => {
     // still landed on the user's screen — the catch path must not trigger
     // a re-send. We simulate by having the adapter succeed on the first
     // call and recording how many times it's invoked across two attempts.
-    seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    await seedAgentAndChannel();
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     insertOutbound('ag-1', session.id, 'out-once');
 
     let callCount = 0;

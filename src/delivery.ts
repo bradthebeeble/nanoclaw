@@ -11,7 +11,7 @@ import type Database from 'better-sqlite3';
 
 import { getRunningSessions, getActiveSessions, createPendingQuestion } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
-import { getDb, hasTable } from './db/connection.js';
+import { get, hasTable } from './db/connection.js';
 import { getMessagingGroupByPlatform } from './db/messaging-groups.js';
 import {
   getDueOutboundMessages,
@@ -122,7 +122,7 @@ async function pollActive(): Promise<void> {
   if (!activePolling) return;
 
   try {
-    const sessions = getRunningSessions();
+    const sessions = await getRunningSessions();
     for (const session of sessions) {
       await deliverSessionMessages(session);
     }
@@ -137,7 +137,7 @@ async function pollSweep(): Promise<void> {
   if (!sweepPolling) return;
 
   try {
-    const sessions = getActiveSessions();
+    const sessions = await getActiveSessions();
     for (const session of sessions) {
       await deliverSessionMessages(session);
     }
@@ -162,7 +162,7 @@ export async function deliverSessionMessages(session: Session): Promise<void> {
 }
 
 async function drainSession(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
 
   let outDb: Database.Database;
@@ -261,7 +261,7 @@ async function deliverMessage(
   // `agent_destinations` table won't exist and `routeAgentMessage`'s permission
   // check will throw, which falls into the normal retry → mark-failed path.
   if (msg.channel_type === 'agent') {
-    if (!hasTable(getDb(), 'agent_destinations')) {
+    if (!(await hasTable('agent_destinations'))) {
       throw new Error(`agent-to-agent module not installed — cannot route message ${msg.id}`);
     }
     const { routeAgentMessage } = await import('./modules/agent-to-agent/agent-route.js');
@@ -286,7 +286,7 @@ async function deliverMessage(
   // (instead of marking it delivered when nothing was actually delivered,
   // which was the pre-refactor bug).
   if (msg.channel_type && msg.platform_id) {
-    const mg = getMessagingGroupByPlatform(msg.channel_type, msg.platform_id);
+    const mg = await getMessagingGroupByPlatform(msg.channel_type, msg.platform_id);
     if (!mg) {
       throw new Error(`unknown messaging group for ${msg.channel_type}/${msg.platform_id} (message ${msg.id})`);
     }
@@ -295,12 +295,11 @@ async function deliverMessage(
     // doesn't exist and we permit all non-origin channel sends (the
     // origin-chat case is always allowed regardless). Inlined SQL instead
     // of importing `hasDestination` so core doesn't depend on the module.
-    if (!isOriginChat && hasTable(getDb(), 'agent_destinations')) {
-      const row = getDb()
-        .prepare(
-          'SELECT 1 FROM agent_destinations WHERE agent_group_id = ? AND target_type = ? AND target_id = ? LIMIT 1',
-        )
-        .get(session.agent_group_id, 'channel', mg.id);
+    if (!isOriginChat && (await hasTable('agent_destinations'))) {
+      const row = await get(
+        'SELECT 1 FROM agent_destinations WHERE agent_group_id = $1 AND target_type = $2 AND target_id = $3 LIMIT 1',
+        [session.agent_group_id, 'channel', mg.id],
+      );
       if (!row) {
         throw new Error(
           `unauthorized channel destination: ${session.agent_group_id} cannot send to ${mg.channel_type}/${mg.platform_id}`,
@@ -313,7 +312,7 @@ async function deliverMessage(
   // Guarded: without the interactive module, `pending_questions` doesn't
   // exist and we skip persistence — the card still delivers to the user,
   // but the response path has nowhere to land and will log unclaimed.
-  if (content.type === 'ask_question' && content.questionId && hasTable(getDb(), 'pending_questions')) {
+  if (content.type === 'ask_question' && content.questionId && (await hasTable('pending_questions'))) {
     const title = content.title as string | undefined;
     const rawOptions = content.options as unknown;
     if (!title || !Array.isArray(rawOptions)) {
@@ -321,7 +320,7 @@ async function deliverMessage(
         questionId: content.questionId,
       });
     } else {
-      const inserted = createPendingQuestion({
+      const inserted = await createPendingQuestion({
         question_id: content.questionId,
         session_id: session.id,
         message_out_id: msg.id,

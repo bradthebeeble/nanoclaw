@@ -12,13 +12,11 @@
  * registration", constant). Storing the render metadata alongside the row
  * lets both sides read from the same source.
  */
-import type Database from 'better-sqlite3';
-import type { Migration } from './index.js';
-
-export const migration013: Migration = {
+export const migration013 = {
   version: 13,
   name: 'approval-render-metadata',
-  up(db: Database.Database) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up(db: any) {
     db.exec(`ALTER TABLE pending_channel_approvals ADD COLUMN title TEXT NOT NULL DEFAULT ''`);
     db.exec(`ALTER TABLE pending_channel_approvals ADD COLUMN options_json TEXT NOT NULL DEFAULT '[]'`);
     db.exec(`ALTER TABLE pending_sender_approvals ADD COLUMN title TEXT NOT NULL DEFAULT ''`);

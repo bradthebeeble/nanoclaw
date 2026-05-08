@@ -1,15 +1,15 @@
 /**
- * Chat SDK StateAdapter backed by SQLite.
+ * Chat SDK StateAdapter backed by Postgres (central DB).
  * Persists subscriptions, locks, KV, and lists across restarts.
  *
- * Ported from feat/chat-sdk-integration branch.
+ * Renamed from SqliteStateAdapter for clarity; file kept as state-sqlite.ts
+ * for minimal import-path churn (callers import by path, not class name).
  */
 import crypto from 'crypto';
 
-import type Database from 'better-sqlite3';
 import type { StateAdapter, QueueEntry } from 'chat';
 
-import { getDb } from './db/connection.js';
+import { get, all, run, getPool } from './db/connection.js';
 
 interface Lock {
   threadId: string;
@@ -18,11 +18,8 @@ interface Lock {
 }
 
 export class SqliteStateAdapter implements StateAdapter {
-  private db!: Database.Database;
-
   async connect(): Promise<void> {
-    this.db = getDb();
-    this.cleanup();
+    await this.cleanup();
   }
 
   async disconnect(): Promise<void> {}
@@ -30,13 +27,14 @@ export class SqliteStateAdapter implements StateAdapter {
   // --- Key-value ---
 
   async get<T = unknown>(key: string): Promise<T | null> {
-    this.cleanup();
-    const row = this.db.prepare('SELECT value, expires_at FROM chat_sdk_kv WHERE key = ?').get(key) as
-      | { value: string; expires_at: number | null }
-      | undefined;
+    await this.cleanup();
+    const row = await get<{ value: string; expires_at: number | null }>(
+      'SELECT value, expires_at FROM chat_sdk_kv WHERE key = $1',
+      [key],
+    );
     if (!row) return null;
     if (row.expires_at && row.expires_at < Date.now()) {
-      this.db.prepare('DELETE FROM chat_sdk_kv WHERE key = ?').run(key);
+      await run('DELETE FROM chat_sdk_kv WHERE key = $1', [key]);
       return null;
     }
     return JSON.parse(row.value) as T;
@@ -44,41 +42,48 @@ export class SqliteStateAdapter implements StateAdapter {
 
   async set<T = unknown>(key: string, value: T, ttlMs?: number): Promise<void> {
     const expiresAt = ttlMs ? Date.now() + ttlMs : null;
-    this.db
-      .prepare('INSERT OR REPLACE INTO chat_sdk_kv (key, value, expires_at) VALUES (?, ?, ?)')
-      .run(key, JSON.stringify(value), expiresAt);
+    await run(
+      `INSERT INTO chat_sdk_kv (key, value, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at`,
+      [key, JSON.stringify(value), expiresAt],
+    );
   }
 
   async setIfNotExists(key: string, value: unknown, ttlMs?: number): Promise<boolean> {
-    const existing = this.db.prepare('SELECT expires_at FROM chat_sdk_kv WHERE key = ?').get(key) as
-      | { expires_at: number | null }
-      | undefined;
-    if (existing?.expires_at && existing.expires_at < Date.now()) {
-      this.db.prepare('DELETE FROM chat_sdk_kv WHERE key = ?').run(key);
-    }
+    // Delete expired entry first
+    await run('DELETE FROM chat_sdk_kv WHERE key = $1 AND expires_at IS NOT NULL AND expires_at < $2', [key, Date.now()]);
     const expiresAt = ttlMs ? Date.now() + ttlMs : null;
-    const result = this.db
-      .prepare('INSERT OR IGNORE INTO chat_sdk_kv (key, value, expires_at) VALUES (?, ?, ?)')
-      .run(key, JSON.stringify(value), expiresAt);
-    return result.changes > 0;
+    const rows = await run(
+      `INSERT INTO chat_sdk_kv (key, value, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (key) DO NOTHING`,
+      [key, JSON.stringify(value), expiresAt],
+    );
+    return rows > 0;
   }
 
   async delete(key: string): Promise<void> {
-    this.db.prepare('DELETE FROM chat_sdk_kv WHERE key = ?').run(key);
+    await run('DELETE FROM chat_sdk_kv WHERE key = $1', [key]);
   }
 
   // --- Subscriptions ---
 
   async subscribe(threadId: string): Promise<void> {
-    this.db.prepare('INSERT OR REPLACE INTO chat_sdk_subscriptions (thread_id) VALUES (?)').run(threadId);
+    await run(
+      `INSERT INTO chat_sdk_subscriptions (thread_id)
+       VALUES ($1)
+       ON CONFLICT (thread_id) DO NOTHING`,
+      [threadId],
+    );
   }
 
   async unsubscribe(threadId: string): Promise<void> {
-    this.db.prepare('DELETE FROM chat_sdk_subscriptions WHERE thread_id = ?').run(threadId);
+    await run('DELETE FROM chat_sdk_subscriptions WHERE thread_id = $1', [threadId]);
   }
 
   async isSubscribed(threadId: string): Promise<boolean> {
-    const row = this.db.prepare('SELECT 1 FROM chat_sdk_subscriptions WHERE thread_id = ? LIMIT 1').get(threadId);
+    const row = await get('SELECT 1 FROM chat_sdk_subscriptions WHERE thread_id = $1 LIMIT 1', [threadId]);
     return !!row;
   }
 
@@ -88,24 +93,28 @@ export class SqliteStateAdapter implements StateAdapter {
     const now = Date.now();
     const token = crypto.randomUUID();
     const expiresAt = now + ttlMs;
-    this.db.prepare('DELETE FROM chat_sdk_locks WHERE thread_id = ? AND expires_at < ?').run(threadId, now);
-    const result = this.db
-      .prepare('INSERT OR IGNORE INTO chat_sdk_locks (thread_id, token, expires_at) VALUES (?, ?, ?)')
-      .run(threadId, token, expiresAt);
-    if (result.changes === 0) return null;
+    await run('DELETE FROM chat_sdk_locks WHERE thread_id = $1 AND expires_at < $2', [threadId, now]);
+    const rows = await run(
+      `INSERT INTO chat_sdk_locks (thread_id, token, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (thread_id) DO NOTHING`,
+      [threadId, token, expiresAt],
+    );
+    if (rows === 0) return null;
     return { threadId, token, expiresAt };
   }
 
   async releaseLock(lock: Lock): Promise<void> {
-    this.db.prepare('DELETE FROM chat_sdk_locks WHERE thread_id = ? AND token = ?').run(lock.threadId, lock.token);
+    await run('DELETE FROM chat_sdk_locks WHERE thread_id = $1 AND token = $2', [lock.threadId, lock.token]);
   }
 
   async extendLock(lock: Lock, ttlMs: number): Promise<boolean> {
     const newExpiry = Date.now() + ttlMs;
-    const result = this.db
-      .prepare('UPDATE chat_sdk_locks SET expires_at = ? WHERE thread_id = ? AND token = ?')
-      .run(newExpiry, lock.threadId, lock.token);
-    if (result.changes > 0) {
+    const rows = await run(
+      'UPDATE chat_sdk_locks SET expires_at = $1 WHERE thread_id = $2 AND token = $3',
+      [newExpiry, lock.threadId, lock.token],
+    );
+    if (rows > 0) {
       lock.expiresAt = newExpiry;
       return true;
     }
@@ -113,35 +122,36 @@ export class SqliteStateAdapter implements StateAdapter {
   }
 
   async forceReleaseLock(threadId: string): Promise<void> {
-    this.db.prepare('DELETE FROM chat_sdk_locks WHERE thread_id = ?').run(threadId);
+    await run('DELETE FROM chat_sdk_locks WHERE thread_id = $1', [threadId]);
   }
 
   // --- Lists ---
 
   async appendToList(key: string, value: unknown, options?: { maxLength?: number; ttlMs?: number }): Promise<void> {
     const expiresAt = options?.ttlMs ? Date.now() + options.ttlMs : null;
-    const maxRow = this.db.prepare('SELECT MAX(idx) as maxIdx FROM chat_sdk_lists WHERE key = ?').get(key) as
-      | { maxIdx: number | null }
-      | undefined;
+    const maxRow = await get<{ maxIdx: number | null }>(
+      'SELECT MAX(idx) as "maxIdx" FROM chat_sdk_lists WHERE key = $1',
+      [key],
+    );
     const nextIdx = (maxRow?.maxIdx ?? -1) + 1;
-    this.db
-      .prepare('INSERT INTO chat_sdk_lists (key, idx, value, expires_at) VALUES (?, ?, ?, ?)')
-      .run(key, nextIdx, JSON.stringify(value), expiresAt);
+    await run(
+      'INSERT INTO chat_sdk_lists (key, idx, value, expires_at) VALUES ($1, $2, $3, $4)',
+      [key, nextIdx, JSON.stringify(value), expiresAt],
+    );
     if (options?.maxLength) {
       const cutoff = nextIdx - options.maxLength;
       if (cutoff >= 0) {
-        this.db.prepare('DELETE FROM chat_sdk_lists WHERE key = ? AND idx <= ?').run(key, cutoff);
+        await run('DELETE FROM chat_sdk_lists WHERE key = $1 AND idx <= $2', [key, cutoff]);
       }
     }
   }
 
   async getList<T = unknown>(key: string): Promise<T[]> {
     const now = Date.now();
-    const rows = this.db
-      .prepare(
-        'SELECT value FROM chat_sdk_lists WHERE key = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY idx ASC',
-      )
-      .all(key, now) as { value: string }[];
+    const rows = await all<{ value: string }>(
+      'SELECT value FROM chat_sdk_lists WHERE key = $1 AND (expires_at IS NULL OR expires_at > $2) ORDER BY idx ASC',
+      [key, now],
+    );
     return rows.map((r) => JSON.parse(r.value) as T);
   }
 
@@ -155,28 +165,46 @@ export class SqliteStateAdapter implements StateAdapter {
 
   async dequeue(threadId: string): Promise<QueueEntry | null> {
     const key = `queue:${threadId}`;
-    const row = this.db
-      .prepare('SELECT idx, value FROM chat_sdk_lists WHERE key = ? ORDER BY idx ASC LIMIT 1')
-      .get(key) as { idx: number; value: string } | undefined;
-    if (!row) return null;
-    this.db.prepare('DELETE FROM chat_sdk_lists WHERE key = ? AND idx = ?').run(key, row.idx);
-    return JSON.parse(row.value) as QueueEntry;
+    // Use a transaction to atomically select-then-delete the first row
+    return getPool().connect().then(async (client) => {
+      try {
+        await client.query('BEGIN');
+        const res = await client.query<{ idx: number; value: string }>(
+          'SELECT idx, value FROM chat_sdk_lists WHERE key = $1 ORDER BY idx ASC LIMIT 1',
+          [key],
+        );
+        if (res.rows.length === 0) {
+          await client.query('COMMIT');
+          return null;
+        }
+        const row = res.rows[0];
+        await client.query('DELETE FROM chat_sdk_lists WHERE key = $1 AND idx = $2', [key, row.idx]);
+        await client.query('COMMIT');
+        return JSON.parse(row.value) as QueueEntry;
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    });
   }
 
   async queueDepth(threadId: string): Promise<number> {
     const key = `queue:${threadId}`;
-    const row = this.db.prepare('SELECT COUNT(*) as count FROM chat_sdk_lists WHERE key = ?').get(key) as {
-      count: number;
-    };
-    return row.count;
+    const row = await get<{ count: string }>(
+      'SELECT COUNT(*) as count FROM chat_sdk_lists WHERE key = $1',
+      [key],
+    );
+    return Number(row?.count ?? 0);
   }
 
   // --- Cleanup ---
 
-  private cleanup(): void {
+  private async cleanup(): Promise<void> {
     const now = Date.now();
-    this.db.prepare('DELETE FROM chat_sdk_kv WHERE expires_at IS NOT NULL AND expires_at < ?').run(now);
-    this.db.prepare('DELETE FROM chat_sdk_locks WHERE expires_at < ?').run(now);
-    this.db.prepare('DELETE FROM chat_sdk_lists WHERE expires_at IS NOT NULL AND expires_at < ?').run(now);
+    await run('DELETE FROM chat_sdk_kv WHERE expires_at IS NOT NULL AND expires_at < $1', [now]);
+    await run('DELETE FROM chat_sdk_locks WHERE expires_at < $1', [now]);
+    await run('DELETE FROM chat_sdk_lists WHERE expires_at IS NOT NULL AND expires_at < $1', [now]);
   }
 }

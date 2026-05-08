@@ -17,13 +17,11 @@
  *      while the card is pending is silently dropped by INSERT OR IGNORE,
  *      preventing card spam.
  */
-import type Database from 'better-sqlite3';
-import type { Migration } from './index.js';
-
-export const migration012: Migration = {
+export const migration012 = {
   version: 12,
   name: 'channel-registration',
-  up: (db: Database.Database) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up: (db: any) => {
     // 1. Add denied_at to messaging_groups. Idempotent guard in case the
     //    column was added by some other path before this migration ran.
     const cols = db.prepare("PRAGMA table_info('messaging_groups')").all() as Array<{ name: string }>;

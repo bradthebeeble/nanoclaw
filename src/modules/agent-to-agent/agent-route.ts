@@ -110,16 +110,16 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   }
   if (
     targetAgentGroupId !== session.agent_group_id &&
-    !hasDestination(session.agent_group_id, 'agent', targetAgentGroupId)
+    !(await hasDestination(session.agent_group_id, 'agent', targetAgentGroupId))
   ) {
     throw new Error(
       `unauthorized agent-to-agent: ${session.agent_group_id} has no destination for ${targetAgentGroupId}`,
     );
   }
-  if (!getAgentGroup(targetAgentGroupId)) {
+  if (!(await getAgentGroup(targetAgentGroupId))) {
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
   }
-  const { session: targetSession } = resolveSession(targetAgentGroupId, null, null, 'agent-shared');
+  const { session: targetSession } = await resolveSession(targetAgentGroupId, null, null, 'agent-shared');
   const a2aMsgId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   // If the source message references files (via `send_file`), forward the
@@ -145,7 +145,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     a2aMsgId,
     forwardedFileCount: countForwardedFiles(forwardedContent),
   });
-  const fresh = getSession(targetSession.id);
+  const fresh = await getSession(targetSession.id);
   if (fresh) await wakeContainer(fresh);
 }
 

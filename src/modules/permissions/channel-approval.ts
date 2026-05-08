@@ -128,12 +128,12 @@ export interface RequestChannelApprovalInput {
 export async function requestChannelApproval(input: RequestChannelApprovalInput): Promise<void> {
   const { messagingGroupId, event } = input;
 
-  if (hasInFlightChannelApproval(messagingGroupId)) {
+  if (await hasInFlightChannelApproval(messagingGroupId)) {
     log.debug('Channel registration already in flight — dropping retry', { messagingGroupId });
     return;
   }
 
-  const agentGroups = getAllAgentGroups();
+  const agentGroups = await getAllAgentGroups();
   if (agentGroups.length === 0) {
     log.warn('Channel registration skipped — no agent groups configured. Run /init-first-agent.', {
       messagingGroupId,
@@ -144,7 +144,7 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
   // are returned regardless of which group we pass.
   const referenceGroup = agentGroups[0];
 
-  const approvers = pickApprover(referenceGroup.id);
+  const approvers = await pickApprover(referenceGroup.id);
   if (approvers.length === 0) {
     log.warn('Channel registration skipped — no owner or admin configured', {
       messagingGroupId,
@@ -153,7 +153,7 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
     return;
   }
 
-  const originMg = getMessagingGroup(messagingGroupId);
+  const originMg = await getMessagingGroup(messagingGroupId);
   const originChannelType = originMg?.channel_type ?? '';
 
   // Resolve channel name if not yet persisted.
@@ -163,7 +163,7 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
       try {
         const name = await channelAdapter.resolveChannelName(originMg.platform_id);
         if (name) {
-          updateMessagingGroup(originMg.id, { name });
+          await updateMessagingGroup(originMg.id, { name });
           originMg.name = name;
         }
       } catch {
@@ -196,7 +196,7 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
   const question = buildQuestionText(isGroup, senderName, channelName, originChannelType);
   const options = normalizeOptions(buildApprovalOptions(agentGroups));
 
-  createPendingChannelApproval({
+  await createPendingChannelApproval({
     messaging_group_id: messagingGroupId,
     agent_group_id: referenceGroup.id,
     original_message: JSON.stringify(event),
@@ -259,17 +259,17 @@ export function buildAgentSelectionOptions(agentGroups: AgentGroup[]): Normalize
  * Create a new agent group and initialize its filesystem. Handles
  * folder-name collisions with numeric suffixes.
  */
-export function createNewAgentGroup(name: string): AgentGroup {
+export async function createNewAgentGroup(name: string): Promise<AgentGroup> {
   let folder = toFolder(name);
   const baseFolder = folder;
   let suffix = 2;
-  while (getAgentGroupByFolder(folder)) {
+  while (await getAgentGroupByFolder(folder)) {
     folder = `${baseFolder}-${suffix}`;
     suffix++;
   }
 
   const agId = `ag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  createAgentGroup({
+  await createAgentGroup({
     id: agId,
     name,
     folder,
@@ -277,7 +277,7 @@ export function createNewAgentGroup(name: string): AgentGroup {
     created_at: new Date().toISOString(),
   });
 
-  const ag = getAgentGroup(agId)!;
+  const ag = (await getAgentGroup(agId))!;
   initGroupFilesystem(ag);
   return ag;
 }

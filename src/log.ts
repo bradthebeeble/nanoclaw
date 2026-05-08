@@ -56,7 +56,11 @@ export const log = {
 
 process.on('uncaughtException', (err) => {
   log.fatal('Uncaught exception', { err });
-  process.exit(1);
+  // In test environments (vitest), vitest owns the error lifecycle — don't
+  // call process.exit() or it kills the worker mid-suite.
+  if (!process.env['VITEST']) {
+    process.exit(1);
+  }
 });
 
 process.on('unhandledRejection', (reason) => {

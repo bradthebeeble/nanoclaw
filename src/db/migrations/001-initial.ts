@@ -1,11 +1,9 @@
-import type Database from 'better-sqlite3';
 
-import type { Migration } from './index.js';
-
-export const migration001: Migration = {
+export const migration001 = {
   version: 1,
   name: 'initial-v2-schema',
-  up(db: Database.Database) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up(db: any) {
     db.exec(`
       CREATE TABLE agent_groups (
         id               TEXT PRIMARY KEY,

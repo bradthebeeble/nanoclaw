@@ -1,4 +1,4 @@
-import { getDb } from './connection.js';
+import { get, all, run } from './connection.js';
 
 export interface UnregisteredSender {
   channel_type: string;
@@ -13,7 +13,7 @@ export interface UnregisteredSender {
   last_seen: string;
 }
 
-export function recordDroppedMessage(msg: {
+export async function recordDroppedMessage(msg: {
   channel_type: string;
   platform_id: string;
   user_id: string | null;
@@ -21,24 +21,26 @@ export function recordDroppedMessage(msg: {
   reason: string;
   messaging_group_id: string | null;
   agent_group_id: string | null;
-}): void {
+}): Promise<void> {
   const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `INSERT INTO unregistered_senders (channel_type, platform_id, user_id, sender_name, reason, messaging_group_id, agent_group_id, message_count, first_seen, last_seen)
-       VALUES (@channel_type, @platform_id, @user_id, @sender_name, @reason, @messaging_group_id, @agent_group_id, 1, @now, @now)
-       ON CONFLICT (channel_type, platform_id) DO UPDATE SET
-         user_id = COALESCE(excluded.user_id, unregistered_senders.user_id),
-         sender_name = COALESCE(excluded.sender_name, unregistered_senders.sender_name),
-         reason = excluded.reason,
-         message_count = unregistered_senders.message_count + 1,
-         last_seen = excluded.last_seen`,
-    )
-    .run({ ...msg, now });
+  // ON CONFLICT (channel_type, platform_id) DO UPDATE SET ... uses excluded.X
+  // which is standard Postgres syntax (as verified in 01-RESEARCH.md finding 3).
+  await run(
+    `INSERT INTO unregistered_senders (channel_type, platform_id, user_id, sender_name, reason, messaging_group_id, agent_group_id, message_count, first_seen, last_seen)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $8)
+     ON CONFLICT (channel_type, platform_id) DO UPDATE SET
+       user_id = COALESCE(excluded.user_id, unregistered_senders.user_id),
+       sender_name = COALESCE(excluded.sender_name, unregistered_senders.sender_name),
+       reason = excluded.reason,
+       message_count = unregistered_senders.message_count + 1,
+       last_seen = excluded.last_seen`,
+    [msg.channel_type, msg.platform_id, msg.user_id, msg.sender_name, msg.reason, msg.messaging_group_id, msg.agent_group_id, now],
+  );
 }
 
-export function getUnregisteredSenders(limit = 50): UnregisteredSender[] {
-  return getDb()
-    .prepare('SELECT * FROM unregistered_senders ORDER BY last_seen DESC LIMIT ?')
-    .all(limit) as UnregisteredSender[];
+export async function getUnregisteredSenders(limit = 50): Promise<UnregisteredSender[]> {
+  return all<UnregisteredSender>(
+    'SELECT * FROM unregistered_senders ORDER BY last_seen DESC LIMIT $1',
+    [limit],
+  );
 }

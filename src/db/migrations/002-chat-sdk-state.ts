@@ -1,11 +1,9 @@
-import type Database from 'better-sqlite3';
 
-import type { Migration } from './index.js';
-
-export const migration002: Migration = {
+export const migration002 = {
   version: 2,
   name: 'chat-sdk-state',
-  up(db: Database.Database) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up(db: any) {
     db.exec(`
       CREATE TABLE chat_sdk_kv (
         key TEXT PRIMARY KEY,

@@ -56,7 +56,7 @@ export async function requestSenderApproval(input: RequestSenderApprovalInput): 
 
   // In-flight dedup: don't spam the admin if the same unknown sender
   // retries while a card is already pending.
-  if (hasInFlightSenderApproval(messagingGroupId, senderIdentity)) {
+  if (await hasInFlightSenderApproval(messagingGroupId, senderIdentity)) {
     log.debug('Unknown-sender approval already in flight — dropping retry', {
       messagingGroupId,
       senderIdentity,
@@ -64,7 +64,7 @@ export async function requestSenderApproval(input: RequestSenderApprovalInput): 
     return;
   }
 
-  const approvers = pickApprover(agentGroupId);
+  const approvers = await pickApprover(agentGroupId);
   if (approvers.length === 0) {
     log.warn('Unknown-sender approval skipped — no owner or admin configured', {
       messagingGroupId,
@@ -74,7 +74,7 @@ export async function requestSenderApproval(input: RequestSenderApprovalInput): 
     return;
   }
 
-  const originMg = getMessagingGroup(messagingGroupId);
+  const originMg = await getMessagingGroup(messagingGroupId);
   const originChannelType = originMg?.channel_type ?? '';
   const target = await pickApprovalDelivery(approvers, originChannelType);
   if (!target) {
@@ -94,7 +94,7 @@ export async function requestSenderApproval(input: RequestSenderApprovalInput): 
   const question = `${senderDisplay} wants to talk to your agent in ${originName}. Allow?`;
   const options = normalizeOptions(APPROVAL_OPTIONS);
 
-  createPendingSenderApproval({
+  await createPendingSenderApproval({
     id: approvalId,
     messaging_group_id: messagingGroupId,
     agent_group_id: agentGroupId,

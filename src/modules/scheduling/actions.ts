@@ -103,7 +103,7 @@ export async function handleUpdateTask(
         senderId: 'system',
       }),
     });
-    const fresh = getSession(session.id);
+    const fresh = await getSession(session.id);
     if (fresh) {
       wakeContainer(fresh).catch((err) =>
         log.error('Failed to wake container after update_task notification', { err }),

@@ -42,17 +42,13 @@ describe('M1: idempotent re-application', () => {
       // First run
       await runMigrations(pool);
 
-      const before = await pool.query<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM schema_version`,
-      );
+      const before = await pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM schema_version`);
       const countBefore = Number(before.rows[0].count);
 
       // Second run — MUST NOT throw
       await expect(runMigrations(pool)).resolves.not.toThrow();
 
-      const after = await pool.query<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM schema_version`,
-      );
+      const after = await pool.query<{ count: string }>(`SELECT COUNT(*) AS count FROM schema_version`);
       const countAfter = Number(after.rows[0].count);
 
       expect(countAfter).toBe(countBefore);
@@ -118,17 +114,39 @@ describe('M2: ON CONFLICT DO NOTHING translation (pending_questions idempotency)
          (question_id, session_id, message_out_id, platform_id, channel_type, thread_id, title, options_json, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (question_id) DO NOTHING`,
-      [pq.question_id, pq.session_id, pq.message_out_id, pq.platform_id, pq.channel_type, pq.thread_id, pq.title, pq.options_json, pq.created_at],
+      [
+        pq.question_id,
+        pq.session_id,
+        pq.message_out_id,
+        pq.platform_id,
+        pq.channel_type,
+        pq.thread_id,
+        pq.title,
+        pq.options_json,
+        pq.created_at,
+      ],
     );
 
     // Second insert with same key — must NOT throw
-    await expect(pool.query(
-      `INSERT INTO pending_questions
+    await expect(
+      pool.query(
+        `INSERT INTO pending_questions
          (question_id, session_id, message_out_id, platform_id, channel_type, thread_id, title, options_json, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (question_id) DO NOTHING`,
-      [pq.question_id, pq.session_id, pq.message_out_id, pq.platform_id, pq.channel_type, pq.thread_id, pq.title, pq.options_json, pq.created_at],
-    )).resolves.not.toThrow();
+        [
+          pq.question_id,
+          pq.session_id,
+          pq.message_out_id,
+          pq.platform_id,
+          pq.channel_type,
+          pq.thread_id,
+          pq.title,
+          pq.options_json,
+          pq.created_at,
+        ],
+      ),
+    ).resolves.not.toThrow();
 
     // Exactly one row
     const count = await pool.query<{ count: string }>(
@@ -168,10 +186,9 @@ describe('M3: pg.Pool round-trip on core tables', () => {
        VALUES ($1, $2, $3, $4, $5)`,
       [id, 'RT Agent', 'rt-agent-' + Date.now(), null, created_at],
     );
-    const result = await pool.query<{ id: string; name: string }>(
-      `SELECT id, name FROM agent_groups WHERE id = $1`,
-      [id],
-    );
+    const result = await pool.query<{ id: string; name: string }>(`SELECT id, name FROM agent_groups WHERE id = $1`, [
+      id,
+    ]);
     expect(result.rows[0].id).toBe(id);
     expect(result.rows[0].name).toBe('RT Agent');
   });
@@ -200,10 +217,7 @@ describe('M3: pg.Pool round-trip on core tables', () => {
        VALUES ($1, $2, $3, $4)`,
       [id, 'discord', 'RT User', created_at],
     );
-    const result = await pool.query<{ kind: string }>(
-      `SELECT kind FROM users WHERE id = $1`,
-      [id],
-    );
+    const result = await pool.query<{ kind: string }>(`SELECT kind FROM users WHERE id = $1`, [id]);
     expect(result.rows[0].kind).toBe('discord');
   });
 
@@ -223,10 +237,7 @@ describe('M3: pg.Pool round-trip on core tables', () => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [id, agId, null, null, null, 'active', 'stopped', null, new Date().toISOString()],
     );
-    const result = await pool.query<{ status: string }>(
-      `SELECT status FROM sessions WHERE id = $1`,
-      [id],
-    );
+    const result = await pool.query<{ status: string }>(`SELECT status FROM sessions WHERE id = $1`, [id]);
     expect(result.rows[0].status).toBe('active');
   });
 

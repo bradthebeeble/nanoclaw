@@ -1,4 +1,3 @@
-import type { Migration } from './index.js';
 
 /**
  * Retroactive schema fix: earlier migration 003 was edited after it had
@@ -15,10 +14,11 @@ import type { Migration } from './index.js';
 // Retains the original `name` ('pending-approvals-title-options') so
 // existing DBs that already recorded this migration don't re-run it. The
 // module- prefix lives on the filename / export identifier only.
-export const moduleApprovalsTitleOptions: Migration = {
+export const moduleApprovalsTitleOptions = {
   version: 7,
   name: 'pending-approvals-title-options',
-  up(db) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up(db: any) {
     const addIfMissing = (col: string, sql: string): void => {
       try {
         db.exec(sql);

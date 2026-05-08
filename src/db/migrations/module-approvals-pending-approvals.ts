@@ -1,4 +1,3 @@
-import type { Migration } from './index.js';
 
 /**
  * `pending_approvals` table — host-side records for any approval-requiring
@@ -15,10 +14,11 @@ import type { Migration } from './index.js';
 // Retains the original `name` ('pending-approvals') so existing DBs that
 // already recorded this migration under that name don't re-run it. The
 // module- prefix lives on the filename / export identifier only.
-export const moduleApprovalsPendingApprovals: Migration = {
+export const moduleApprovalsPendingApprovals = {
   version: 3,
   name: 'pending-approvals',
-  up(db) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  up(db: any) {
     db.exec(`
       CREATE TABLE pending_approvals (
         approval_id         TEXT PRIMARY KEY,

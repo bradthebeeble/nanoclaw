@@ -1,4 +1,4 @@
-export { initDb, initTestDb, getDb, closeDb } from './connection.js';
+export { initDb, initTestDb, getPool, closeDb, get, all, run, tx, hasTable } from './connection.js';
 export { runMigrations } from './migrations/index.js';
 export {
   createAgentGroup,

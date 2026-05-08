@@ -12,7 +12,9 @@
  *  - Deny path: pending row deleted, no member added
  */
 import fs from 'fs';
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import type { Pool } from 'pg';
 
 import { initTestDb, closeDb, runMigrations } from '../../db/index.js';
 import { createAgentGroup } from '../../db/agent-groups.js';
@@ -40,15 +42,14 @@ vi.mock('../../delivery.js', () => ({
 // instead of hitting a real openDM RPC.
 vi.mock('./user-dm.js', () => ({
   ensureUserDm: vi.fn(async (userId: string) => {
-    const { getDb } = await import('../../db/connection.js');
-    const row = getDb()
-      .prepare(
-        `SELECT mg.* FROM messaging_groups mg
-           JOIN user_dms ud ON ud.messaging_group_id = mg.id
-          WHERE ud.user_id = ?`,
-      )
-      .get(userId);
-    return row;
+    const { getPool } = await import('../../db/connection.js');
+    const result = await getPool().query<{ id: string; channel_type: string; platform_id: string; is_group: number; unknown_sender_policy: string; created_at: string; denied_at: string | null; name: string }>(
+      `SELECT mg.* FROM messaging_groups mg
+         JOIN user_dms ud ON ud.messaging_group_id = mg.id
+        WHERE ud.user_id = $1`,
+      [userId],
+    );
+    return result.rows[0] ?? null;
   }),
 }));
 
@@ -63,11 +64,29 @@ function now() {
   return new Date().toISOString();
 }
 
+let container: StartedPostgreSqlContainer;
+let pool: Pool;
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer().start();
+  pool = initTestDb({
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    database: container.getDatabase(),
+    user: container.getUsername(),
+    password: container.getPassword(),
+  });
+  await runMigrations(pool);
+}, 120_000);
+
+afterAll(async () => {
+  await closeDb();
+  await container.stop();
+});
+
 beforeEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
-  const db = initTestDb();
-  runMigrations(db);
 
   // Side-effect imports: register hooks (permissions module) AFTER the
   // mocks are in place so the access gate / response handler pick up the
@@ -76,9 +95,9 @@ beforeEach(async () => {
 
   // Fixtures: agent group, messaging group with request_approval, wiring,
   // owner + DM messaging group for approver delivery.
-  createAgentGroup({ id: 'ag-1', name: 'Agent', folder: 'agent', agent_provider: null, created_at: now() });
+  await createAgentGroup({ id: 'ag-1', name: 'Agent', folder: 'agent', agent_provider: null, created_at: now() });
 
-  createMessagingGroup({
+  await createMessagingGroup({
     id: 'mg-chat',
     channel_type: 'telegram',
     platform_id: 'chat-123',
@@ -87,7 +106,7 @@ beforeEach(async () => {
     unknown_sender_policy: 'request_approval',
     created_at: now(),
   });
-  createMessagingGroupAgent({
+  await createMessagingGroupAgent({
     id: 'mga-1',
     messaging_group_id: 'mg-chat',
     agent_group_id: 'ag-1',
@@ -101,15 +120,15 @@ beforeEach(async () => {
   });
 
   // Owner user + their DM messaging group (pickApprover + ensureUserDm target).
-  upsertUser({ id: 'telegram:owner', kind: 'telegram', display_name: 'Owner', created_at: now() });
-  grantRole({
+  await upsertUser({ id: 'telegram:owner', kind: 'telegram', display_name: 'Owner', created_at: now() });
+  await grantRole({
     user_id: 'telegram:owner',
     role: 'owner',
     agent_group_id: null,
     granted_by: null,
     granted_at: now(),
   });
-  createMessagingGroup({
+  await createMessagingGroup({
     id: 'mg-dm-owner',
     channel_type: 'telegram',
     platform_id: 'dm-owner',
@@ -118,20 +137,23 @@ beforeEach(async () => {
     unknown_sender_policy: 'public',
     created_at: now(),
   });
-  const { getDb } = await import('../../db/connection.js');
-  getDb()
-    .prepare(
-      `INSERT INTO user_dms (user_id, channel_type, messaging_group_id, resolved_at)
-       VALUES (?, ?, ?, ?)`,
-    )
-    .run('telegram:owner', 'telegram', 'mg-dm-owner', now());
+  await pool.query(
+    `INSERT INTO user_dms (user_id, channel_type, messaging_group_id, resolved_at)
+     VALUES ($1, $2, $3, $4)`,
+    ['telegram:owner', 'telegram', 'mg-dm-owner', now()],
+  );
 
   deliverMock.mockClear();
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  await pool.query(
+    `TRUNCATE TABLE agent_groups, messaging_groups, users,
+       sessions, messaging_group_agents, user_roles, agent_group_members,
+       user_dms, agent_destinations, pending_approvals, pending_questions,
+       pending_sender_approvals, pending_channel_approvals CASCADE`,
+  );
 });
 
 function stranger(text: string) {
@@ -170,8 +192,7 @@ describe('unknown-sender request_approval flow', () => {
     expect(payload.type).toBe('ask_question');
     expect(payload.questionId).toMatch(/^nsa-/);
 
-    const { getDb } = await import('../../db/connection.js');
-    const rows = getDb().prepare('SELECT * FROM pending_sender_approvals').all();
+    const { rows } = await pool.query('SELECT * FROM pending_sender_approvals');
     expect(rows).toHaveLength(1);
   });
 
@@ -183,9 +204,8 @@ describe('unknown-sender request_approval flow', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(deliverMock).toHaveBeenCalledTimes(1);
-    const { getDb } = await import('../../db/connection.js');
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_sender_approvals').get() as { c: number }).c;
-    expect(count).toBe(1);
+    const { rows } = await pool.query<{ c: string }>('SELECT COUNT(*) AS c FROM pending_sender_approvals');
+    expect(Number(rows[0].c)).toBe(1);
   });
 
   it('approve → adds member and replays the original message', async () => {
@@ -197,8 +217,8 @@ describe('unknown-sender request_approval flow', () => {
     await routeInbound(stranger('please let me in'));
     await new Promise((r) => setTimeout(r, 10));
 
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT id FROM pending_sender_approvals').get() as { id: string };
+    const { rows: pendingRows } = await pool.query<{ id: string }>('SELECT id FROM pending_sender_approvals');
+    const pending = pendingRows[0];
     expect(pending).toBeDefined();
 
     // Fire the approve click through the response-handler chain.
@@ -218,14 +238,17 @@ describe('unknown-sender request_approval flow', () => {
     }
 
     // Member row added for the stranger against the wired agent group.
-    const member = getDb()
-      .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('tg:stranger', 'ag-1');
-    expect(member).toBeDefined();
+    const { rows: memberRows } = await pool.query(
+      'SELECT 1 AS x FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2',
+      ['tg:stranger', 'ag-1'],
+    );
+    expect(memberRows[0]).toBeDefined();
 
     // Pending row cleared.
-    const stillPending = getDb().prepare('SELECT COUNT(*) AS c FROM pending_sender_approvals').get() as { c: number };
-    expect(stillPending.c).toBe(0);
+    const { rows: stillPendingRows } = await pool.query<{ c: string }>(
+      'SELECT COUNT(*) AS c FROM pending_sender_approvals',
+    );
+    expect(Number(stillPendingRows[0].c)).toBe(0);
 
     // Message replayed + container woken.
     expect(wakeContainer).toHaveBeenCalled();
@@ -238,8 +261,8 @@ describe('unknown-sender request_approval flow', () => {
     await routeInbound(stranger('hello'));
     await new Promise((r) => setTimeout(r, 10));
 
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT id FROM pending_sender_approvals').get() as { id: string };
+    const { rows: pendingRows } = await pool.query<{ id: string }>('SELECT id FROM pending_sender_approvals');
+    const pending = pendingRows[0];
     expect(pending).toBeDefined();
 
     for (const handler of getResponseHandlers()) {
@@ -254,12 +277,13 @@ describe('unknown-sender request_approval flow', () => {
       if (claimed) break;
     }
 
-    const count = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_sender_approvals').get() as { c: number }).c;
-    expect(count).toBe(0);
-    const member = getDb()
-      .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('tg:stranger', 'ag-1');
-    expect(member).toBeUndefined();
+    const { rows: countRows } = await pool.query<{ c: string }>('SELECT COUNT(*) AS c FROM pending_sender_approvals');
+    expect(Number(countRows[0].c)).toBe(0);
+    const { rows: memberRows } = await pool.query(
+      'SELECT 1 AS x FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2',
+      ['tg:stranger', 'ag-1'],
+    );
+    expect(memberRows[0]).toBeUndefined();
   });
 
   it('rejects clicks from an unauthorized user (prevents self-admit via forwarded card)', async () => {
@@ -270,8 +294,8 @@ describe('unknown-sender request_approval flow', () => {
     await routeInbound(stranger('can I play'));
     await new Promise((r) => setTimeout(r, 10));
 
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT id FROM pending_sender_approvals').get() as { id: string };
+    const { rows: pendingRows } = await pool.query<{ id: string }>('SELECT id FROM pending_sender_approvals');
+    const pending = pendingRows[0];
     expect(pending).toBeDefined();
 
     // A random user (not the stranger, not the owner, not an admin) tries to
@@ -290,21 +314,23 @@ describe('unknown-sender request_approval flow', () => {
     }
 
     // No member added for the stranger.
-    const member = getDb()
-      .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('tg:stranger', 'ag-1');
-    expect(member).toBeUndefined();
+    const { rows: memberRows } = await pool.query(
+      'SELECT 1 AS x FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2',
+      ['tg:stranger', 'ag-1'],
+    );
+    expect(memberRows[0]).toBeUndefined();
 
     // Pending row is still there — a legitimate approver can still act on it.
-    const stillPending = (getDb().prepare('SELECT COUNT(*) AS c FROM pending_sender_approvals').get() as { c: number })
-      .c;
-    expect(stillPending).toBe(1);
+    const { rows: stillPendingRows } = await pool.query<{ c: string }>(
+      'SELECT COUNT(*) AS c FROM pending_sender_approvals',
+    );
+    expect(Number(stillPendingRows[0].c)).toBe(1);
   });
 
   it('accepts a click from a global admin even if they are not the designated approver', async () => {
     // Pre-seed a separate admin user so we can click as them.
-    upsertUser({ id: 'telegram:admin-bob', kind: 'telegram', display_name: 'Bob', created_at: now() });
-    grantRole({
+    await upsertUser({ id: 'telegram:admin-bob', kind: 'telegram', display_name: 'Bob', created_at: now() });
+    await grantRole({
       user_id: 'telegram:admin-bob',
       role: 'admin',
       agent_group_id: null,
@@ -318,8 +344,8 @@ describe('unknown-sender request_approval flow', () => {
     await routeInbound(stranger('knock knock'));
     await new Promise((r) => setTimeout(r, 10));
 
-    const { getDb } = await import('../../db/connection.js');
-    const pending = getDb().prepare('SELECT id FROM pending_sender_approvals').get() as { id: string };
+    const { rows: pendingRows } = await pool.query<{ id: string }>('SELECT id FROM pending_sender_approvals');
+    const pending = pendingRows[0];
     expect(pending).toBeDefined();
 
     // Admin clicks approve (not the designated approver, which was owner).
@@ -336,9 +362,10 @@ describe('unknown-sender request_approval flow', () => {
     }
 
     // Stranger admitted thanks to the admin's authority.
-    const member = getDb()
-      .prepare('SELECT 1 AS x FROM agent_group_members WHERE user_id = ? AND agent_group_id = ?')
-      .get('tg:stranger', 'ag-1');
-    expect(member).toBeDefined();
+    const { rows: memberRows } = await pool.query(
+      'SELECT 1 AS x FROM agent_group_members WHERE user_id = $1 AND agent_group_id = $2',
+      ['tg:stranger', 'ag-1'],
+    );
+    expect(memberRows[0]).toBeDefined();
   });
 });

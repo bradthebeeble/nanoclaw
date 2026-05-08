@@ -33,7 +33,7 @@
  *   - src/db/messaging-groups.ts::createMessagingGroupAgent
  */
 import type { AgentDestination } from '../../../types.js';
-import { getDb } from '../../../db/connection.js';
+import { get, all, run } from '../../../db/connection.js';
 
 /**
  * ⚠️  Caller responsibility: after this returns, call
@@ -41,43 +41,46 @@ import { getDb } from '../../../db/connection.js';
  * session of that agent group so the change propagates to the running
  * container's inbound.db. See the top-of-file invariant.
  */
-export function createDestination(row: AgentDestination): void {
-  getDb()
-    .prepare(
-      `INSERT INTO agent_destinations (agent_group_id, local_name, target_type, target_id, created_at)
-       VALUES (@agent_group_id, @local_name, @target_type, @target_id, @created_at)`,
-    )
-    .run(row);
+export async function createDestination(row: AgentDestination): Promise<void> {
+  await run(
+    `INSERT INTO agent_destinations (agent_group_id, local_name, target_type, target_id, created_at)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [row.agent_group_id, row.local_name, row.target_type, row.target_id, row.created_at],
+  );
 }
 
-export function getDestinations(agentGroupId: string): AgentDestination[] {
-  return getDb()
-    .prepare('SELECT * FROM agent_destinations WHERE agent_group_id = ?')
-    .all(agentGroupId) as AgentDestination[];
+export async function getDestinations(agentGroupId: string): Promise<AgentDestination[]> {
+  return all<AgentDestination>(
+    'SELECT * FROM agent_destinations WHERE agent_group_id = $1',
+    [agentGroupId],
+  );
 }
 
-export function getDestinationByName(agentGroupId: string, localName: string): AgentDestination | undefined {
-  return getDb()
-    .prepare('SELECT * FROM agent_destinations WHERE agent_group_id = ? AND local_name = ?')
-    .get(agentGroupId, localName) as AgentDestination | undefined;
+export async function getDestinationByName(agentGroupId: string, localName: string): Promise<AgentDestination | undefined> {
+  return get<AgentDestination>(
+    'SELECT * FROM agent_destinations WHERE agent_group_id = $1 AND local_name = $2',
+    [agentGroupId, localName],
+  );
 }
 
 /** Reverse lookup: what does this agent call the given target? */
-export function getDestinationByTarget(
+export async function getDestinationByTarget(
   agentGroupId: string,
   targetType: 'channel' | 'agent',
   targetId: string,
-): AgentDestination | undefined {
-  return getDb()
-    .prepare('SELECT * FROM agent_destinations WHERE agent_group_id = ? AND target_type = ? AND target_id = ?')
-    .get(agentGroupId, targetType, targetId) as AgentDestination | undefined;
+): Promise<AgentDestination | undefined> {
+  return get<AgentDestination>(
+    'SELECT * FROM agent_destinations WHERE agent_group_id = $1 AND target_type = $2 AND target_id = $3',
+    [agentGroupId, targetType, targetId],
+  );
 }
 
 /** Permission check: can this agent send to this target? */
-export function hasDestination(agentGroupId: string, targetType: 'channel' | 'agent', targetId: string): boolean {
-  const row = getDb()
-    .prepare('SELECT 1 FROM agent_destinations WHERE agent_group_id = ? AND target_type = ? AND target_id = ? LIMIT 1')
-    .get(agentGroupId, targetType, targetId);
+export async function hasDestination(agentGroupId: string, targetType: 'channel' | 'agent', targetId: string): Promise<boolean> {
+  const row = await get(
+    'SELECT 1 FROM agent_destinations WHERE agent_group_id = $1 AND target_type = $2 AND target_id = $3 LIMIT 1',
+    [agentGroupId, targetType, targetId],
+  );
   return !!row;
 }
 
@@ -86,41 +89,33 @@ export function hasDestination(agentGroupId: string, targetType: 'channel' | 'ag
  * `writeDestinations(agentGroupId, <sessionId>)` for each active session
  * so the deletion propagates to the running container's inbound.db.
  */
-export function deleteDestination(agentGroupId: string, localName: string): void {
-  getDb()
-    .prepare('DELETE FROM agent_destinations WHERE agent_group_id = ? AND local_name = ?')
-    .run(agentGroupId, localName);
+export async function deleteDestination(agentGroupId: string, localName: string): Promise<void> {
+  await run(
+    'DELETE FROM agent_destinations WHERE agent_group_id = $1 AND local_name = $2',
+    [agentGroupId, localName],
+  );
 }
 
 /**
  * Delete every destination row where this agent group is either the owner
- * or the target. Used when tearing down a dev agent after a swap request
- * completes/rolls-back — drops the bidirectional destinations in one call.
- *
- * ⚠️  Caller responsibility: not only does `agentGroupId`'s own session
- * projection need a refresh, but ALSO every OTHER agent group that had
- * `agentGroupId` as a destination target. Use `getDestinationReferencers`
- * below to find them BEFORE calling this (the rows are gone afterwards).
+ * or the target.
  */
-export function deleteAllDestinationsTouching(agentGroupId: string): void {
-  getDb()
-    .prepare('DELETE FROM agent_destinations WHERE agent_group_id = ? OR (target_type = ? AND target_id = ?)')
-    .run(agentGroupId, 'agent', agentGroupId);
+export async function deleteAllDestinationsTouching(agentGroupId: string): Promise<void> {
+  await run(
+    'DELETE FROM agent_destinations WHERE agent_group_id = $1 OR (target_type = $2 AND target_id = $3)',
+    [agentGroupId, 'agent', agentGroupId],
+  );
 }
 
 /**
  * Return the list of agent_group_ids that currently have a destination
- * row pointing at `targetAgentGroupId`. Call this BEFORE
- * `deleteAllDestinationsTouching` if you need to know whose session
- * projections to refresh after the delete — the rows are gone once the
- * delete runs.
+ * row pointing at `targetAgentGroupId`.
  */
-export function getDestinationReferencers(targetAgentGroupId: string): string[] {
-  const rows = getDb()
-    .prepare(
-      "SELECT DISTINCT agent_group_id FROM agent_destinations WHERE target_type = 'agent' AND target_id = ? AND agent_group_id != ?",
-    )
-    .all(targetAgentGroupId, targetAgentGroupId) as Array<{ agent_group_id: string }>;
+export async function getDestinationReferencers(targetAgentGroupId: string): Promise<string[]> {
+  const rows = await all<{ agent_group_id: string }>(
+    "SELECT DISTINCT agent_group_id FROM agent_destinations WHERE target_type = 'agent' AND target_id = $1 AND agent_group_id != $2",
+    [targetAgentGroupId, targetAgentGroupId],
+  );
   return rows.map((r) => r.agent_group_id);
 }
 

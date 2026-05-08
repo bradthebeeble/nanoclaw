@@ -73,7 +73,7 @@ export function getApprovalHandler(action: string): ApprovalHandler | undefined 
  * Ordered list of user IDs eligible to approve an action for the given agent
  * group. Preference: admins @ that group → global admins → owners.
  */
-export function pickApprover(agentGroupId: string | null): string[] {
+export async function pickApprover(agentGroupId: string | null): Promise<string[]> {
   const approvers: string[] = [];
   const seen = new Set<string>();
   const add = (id: string): void => {
@@ -84,10 +84,10 @@ export function pickApprover(agentGroupId: string | null): string[] {
   };
 
   if (agentGroupId) {
-    for (const r of getAdminsOfAgentGroup(agentGroupId)) add(r.user_id);
+    for (const r of await getAdminsOfAgentGroup(agentGroupId)) add(r.user_id);
   }
-  for (const r of getGlobalAdmins()) add(r.user_id);
-  for (const r of getOwners()) add(r.user_id);
+  for (const r of await getGlobalAdmins()) add(r.user_id);
+  for (const r of await getOwners()) add(r.user_id);
 
   return approvers;
 }
@@ -136,10 +136,12 @@ export function notifyAgent(session: Session, text: string): void {
     threadId: null,
     content: JSON.stringify({ text, sender: 'system', senderId: 'system' }),
   });
-  const fresh = getSession(session.id);
-  if (fresh) {
-    wakeContainer(fresh).catch((err) => log.error('Failed to wake container after notification', { err }));
-  }
+  // Fire-and-forget: getSession is async but notifyAgent is intentionally sync
+  void getSession(session.id).then((fresh) => {
+    if (fresh) {
+      wakeContainer(fresh).catch((err) => log.error('Failed to wake container after notification', { err }));
+    }
+  });
 }
 
 export interface RequestApprovalOptions {
@@ -164,15 +166,14 @@ export interface RequestApprovalOptions {
 export async function requestApproval(opts: RequestApprovalOptions): Promise<void> {
   const { session, action, payload, title, question, agentName } = opts;
 
-  const approvers = pickApprover(session.agent_group_id);
+  const approvers = await pickApprover(session.agent_group_id);
   if (approvers.length === 0) {
     notifyAgent(session, `${action} failed: no owner or admin configured to approve.`);
     return;
   }
 
-  const originChannelType = session.messaging_group_id
-    ? (getMessagingGroup(session.messaging_group_id)?.channel_type ?? '')
-    : '';
+  const originMg = session.messaging_group_id ? await getMessagingGroup(session.messaging_group_id) : null;
+  const originChannelType = originMg?.channel_type ?? '';
 
   const target = await pickApprovalDelivery(approvers, originChannelType);
   if (!target) {
@@ -182,7 +183,7 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
 
   const approvalId = `appr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const normalizedOptions = normalizeOptions(APPROVAL_OPTIONS);
-  createPendingApproval({
+  await createPendingApproval({
     approval_id: approvalId,
     session_id: session.id,
     request_id: approvalId,

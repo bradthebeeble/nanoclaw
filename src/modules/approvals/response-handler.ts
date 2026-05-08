@@ -28,13 +28,13 @@ export async function handleApprovalsResponse(payload: ResponsePayload): Promise
   }
 
   // DB-backed pending_approvals.
-  const approval = getPendingApproval(payload.questionId);
+  const approval = await getPendingApproval(payload.questionId);
   if (!approval) return false;
 
   if (approval.action === ONECLI_ACTION) {
     // Row exists but the in-memory resolver is gone (timer fired or the process
     // was in a weird state). Nothing to do — just drop the row.
-    deletePendingApproval(payload.questionId);
+    await deletePendingApproval(payload.questionId);
     return true;
   }
 
@@ -48,12 +48,12 @@ async function handleRegisteredApproval(
   userId: string,
 ): Promise<void> {
   if (!approval.session_id) {
-    deletePendingApproval(approval.approval_id);
+    await deletePendingApproval(approval.approval_id);
     return;
   }
-  const session = getSession(approval.session_id);
+  const session = await getSession(approval.session_id);
   if (!session) {
-    deletePendingApproval(approval.approval_id);
+    await deletePendingApproval(approval.approval_id);
     return;
   }
 
@@ -72,7 +72,7 @@ async function handleRegisteredApproval(
   if (selectedOption !== 'approve') {
     notify(`Your ${approval.action} request was rejected by admin.`);
     log.info('Approval rejected', { approvalId: approval.approval_id, action: approval.action, userId });
-    deletePendingApproval(approval.approval_id);
+    await deletePendingApproval(approval.approval_id);
     await wakeContainer(session);
     return;
   }
@@ -85,7 +85,7 @@ async function handleRegisteredApproval(
       action: approval.action,
     });
     notify(`Your ${approval.action} was approved, but no handler is installed to apply it.`);
-    deletePendingApproval(approval.approval_id);
+    await deletePendingApproval(approval.approval_id);
     await wakeContainer(session);
     return;
   }
@@ -101,6 +101,6 @@ async function handleRegisteredApproval(
     );
   }
 
-  deletePendingApproval(approval.approval_id);
+  await deletePendingApproval(approval.approval_id);
   await wakeContainer(session);
 }

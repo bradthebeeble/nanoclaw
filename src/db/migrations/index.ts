@@ -1,40 +1,59 @@
-import type Database from 'better-sqlite3';
+/**
+ * Migration registry for the NanoClaw EE Postgres central DB.
+ *
+ * DESIGN NOTE — why only one migration in the registry:
+ *
+ *   The upstream NanoClaw OSS codebase had 11 SQLite migrations (001–013
+ *   with some gaps). Rather than re-running those SQLite-specific migrations
+ *   against Postgres (they use SQLite-only SQL and backfill logic), we apply
+ *   the cumulative final schema in one shot via `000-postgres-init.ts`.
+ *   That migration also BACKFILLS schema_version with all 11 upstream migration
+ *   names, so if any of them were ever added to this registry by mistake, the
+ *   runner would see them as already-applied and skip them.
+ *
+ *   Future NanoClaw EE-specific migrations should be added here following the
+ *   pattern below (version number >= 100 to avoid collisions with upstream).
+ */
+import type { Pool, PoolClient } from 'pg';
 
 import { log } from '../../log.js';
-import { migration001 } from './001-initial.js';
-import { migration002 } from './002-chat-sdk-state.js';
-import { moduleAgentToAgentDestinations } from './module-agent-to-agent-destinations.js';
-import { migration008 } from './008-dropped-messages.js';
-import { migration009 } from './009-drop-pending-credentials.js';
-import { migration010 } from './010-engage-modes.js';
-import { migration011 } from './011-pending-sender-approvals.js';
-import { migration012 } from './012-channel-registration.js';
-import { migration013 } from './013-approval-render-metadata.js';
-import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
-import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
+import { migrationPostgresInit } from './000-postgres-init.js';
 
 export interface Migration {
   version: number;
   name: string;
-  up: (db: Database.Database) => void;
+  up: (client: PoolClient) => Promise<void>;
 }
 
+/**
+ * Registry of EE-specific migrations. The upstream OSS migrations are
+ * represented by the single `migrationPostgresInit` entry which applies the
+ * full schema in one shot and backfills schema_version for all 11 upstream
+ * migration names.
+ *
+ * To add a new EE migration:
+ *   1. Create `NNN-migration-name.ts` in this directory with:
+ *        export async function up(client: PoolClient): Promise<void> { ... }
+ *        export const migrationNNN = { version: NNN, name: 'migration-name', up };
+ *   2. Import it here and add to the `migrations` array (in version order).
+ *   3. Use $N positional params only — NO named prepared statements (PgBouncer invariant).
+ */
 const migrations: Migration[] = [
-  migration001,
-  migration002,
-  moduleApprovalsPendingApprovals,
-  moduleAgentToAgentDestinations,
-  moduleApprovalsTitleOptions,
-  migration008,
-  migration009,
-  migration010,
-  migration011,
-  migration012,
-  migration013,
+  migrationPostgresInit,
+  // Future EE migrations here (version >= 100)
 ];
 
-export function runMigrations(db: Database.Database): void {
-  db.exec(`
+/**
+ * Run all pending migrations against the given pool.
+ *
+ * Algorithm:
+ *   1. Create schema_version if not exists (idempotent bootstrap).
+ *   2. Load applied migration names.
+ *   3. For each pending migration: BEGIN + up(client) + INSERT name + COMMIT.
+ */
+export async function runMigrations(pool: Pool): Promise<void> {
+  // Bootstrap schema_version outside a transaction so it's visible immediately.
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER PRIMARY KEY,
       name    TEXT NOT NULL,
@@ -43,31 +62,43 @@ export function runMigrations(db: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_schema_version_name ON schema_version(name);
   `);
 
-  // Uniqueness is keyed on `name`, not `version`. This lets module
-  // migrations (added later by install skills) pick arbitrary version
-  // numbers without coordinating across modules. `version` stays on
-  // the Migration object as an ordering hint within the barrel array;
-  // the stored `version` column is auto-assigned at insert time as an
-  // applied-order number.
-  const applied = new Set<string>(
-    (db.prepare('SELECT name FROM schema_version').all() as { name: string }[]).map((r) => r.name),
-  );
+  const { rows } = await pool.query<{ name: string }>('SELECT name FROM schema_version');
+  const applied = new Set<string>(rows.map((r) => r.name));
+
   const pending = migrations.filter((m) => !applied.has(m.name));
-  if (pending.length === 0) return;
+  if (pending.length === 0) {
+    log.info('Migrations: all up to date');
+    return;
+  }
 
   log.info('Running migrations', { count: pending.length });
 
   for (const m of pending) {
-    db.transaction(() => {
-      m.up(db);
-      const next = (db.prepare('SELECT COALESCE(MAX(version), 0) + 1 AS v FROM schema_version').get() as { v: number })
-        .v;
-      db.prepare('INSERT INTO schema_version (version, name, applied) VALUES (?, ?, ?)').run(
-        next,
-        m.name,
-        new Date().toISOString(),
+    const client: PoolClient = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      await m.up(client);
+
+      // Assign the next sequential version number.
+      const versionResult = await client.query<{ v: number }>(
+        `SELECT COALESCE(MAX(version), 0) + 1 AS v FROM schema_version`,
       );
-    })();
-    log.info('Migration applied', { name: m.name });
+      const next = versionResult.rows[0].v;
+
+      await client.query(
+        `INSERT INTO schema_version (version, name, applied) VALUES ($1, $2, $3)
+         ON CONFLICT (name) DO NOTHING`,
+        [next, m.name, new Date().toISOString()],
+      );
+
+      await client.query('COMMIT');
+      log.info('Migration applied', { name: m.name });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }

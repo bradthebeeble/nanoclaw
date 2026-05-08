@@ -6,7 +6,9 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import type { Pool } from 'pg';
 
 import {
   initTestDb,
@@ -49,30 +51,53 @@ function now() {
 
 const TEST_DIR = '/tmp/nanoclaw-test-host';
 
+let container: StartedPostgreSqlContainer;
+let pool: Pool;
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer().start();
+  pool = initTestDb({
+    host: container.getHost(),
+    port: container.getMappedPort(5432),
+    database: container.getDatabase(),
+    user: container.getUsername(),
+    password: container.getPassword(),
+  });
+  await runMigrations(pool);
+}, 120_000);
+
+afterAll(async () => {
+  await closeDb();
+  await container.stop();
+});
+
 beforeEach(() => {
   // Clean test directory
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
-
-  const db = initTestDb();
-  runMigrations(db);
 });
 
-afterEach(() => {
-  closeDb();
+afterEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
+  // CASCADE handles all FK-dependent tables automatically.
+  await pool.query(
+    `TRUNCATE TABLE agent_groups, messaging_groups, users,
+       sessions, messaging_group_agents, user_roles, agent_group_members,
+       user_dms, agent_destinations, pending_approvals, pending_questions,
+       pending_sender_approvals, pending_channel_approvals CASCADE`,
+  );
 });
 
 describe('session manager', () => {
-  beforeEach(() => {
-    createAgentGroup({
+  beforeEach(async () => {
+    await createAgentGroup({
       id: 'ag-1',
       name: 'Test Agent',
       folder: 'test-agent',
       agent_provider: null,
       created_at: now(),
     });
-    createMessagingGroup({
+    await createMessagingGroup({
       id: 'mg-1',
       channel_type: 'discord',
       platform_id: 'chan-123',
@@ -162,9 +187,9 @@ describe('session manager', () => {
     expect(fs.existsSync(msgOutbox)).toBe(false);
   });
 
-  it('should reject inbound attachment writes through a pre-placed symlinked inbox dir', () => {
+  it('should reject inbound attachment writes through a pre-placed symlinked inbox dir', async () => {
     initSessionFolder('ag-1', 'sess-test');
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
 
     // The container has /workspace write access, so it can pre create
     // inbox/<msgId> as a symlink to escape.
@@ -187,9 +212,9 @@ describe('session manager', () => {
     expect(fs.existsSync(path.join(evilTarget, 'photo.png'))).toBe(false);
   });
 
-  it('should refuse to follow a pre-existing symlink at the inbound attachment path', () => {
+  it('should refuse to follow a pre-existing symlink at the inbound attachment path', async () => {
     initSessionFolder('ag-1', 'sess-test');
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
 
     // The container pre creates inbox/<msgId>/photo.png as a symlink to a
     // host file. Without the wx flag, writeFileSync would follow it.
@@ -212,9 +237,9 @@ describe('session manager', () => {
     expect(fs.readFileSync(outside, 'utf-8')).toBe('ORIGINAL');
   });
 
-  it('should reject inbound attachments when messageId is unsafe', () => {
+  it('should reject inbound attachments when messageId is unsafe', async () => {
     initSessionFolder('ag-1', 'sess-test');
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
 
     writeSessionMessage('ag-1', session.id, {
       id: '../../escape',
@@ -232,9 +257,9 @@ describe('session manager', () => {
     }
   });
 
-  it('should still save inbound attachments with safe basenames', () => {
+  it('should still save inbound attachments with safe basenames', async () => {
     initSessionFolder('ag-1', 'sess-test');
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
 
     writeSessionMessage('ag-1', session.id, {
       id: 'msg-ok',
@@ -251,30 +276,30 @@ describe('session manager', () => {
     expect(fs.readFileSync(expected, 'utf-8')).toBe('PNGBYTES');
   });
 
-  it('should resolve to existing session (shared mode)', () => {
-    const { session: s1, created: c1 } = resolveSession('ag-1', 'mg-1', null, 'shared');
+  it('should resolve to existing session (shared mode)', async () => {
+    const { session: s1, created: c1 } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     expect(c1).toBe(true);
 
-    const { session: s2, created: c2 } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session: s2, created: c2 } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     expect(c2).toBe(false);
     expect(s2.id).toBe(s1.id);
   });
 
-  it('should create separate sessions per thread (per-thread mode)', () => {
-    const { session: s1 } = resolveSession('ag-1', 'mg-1', 'thread-1', 'per-thread');
-    const { session: s2 } = resolveSession('ag-1', 'mg-1', 'thread-2', 'per-thread');
+  it('should create separate sessions per thread (per-thread mode)', async () => {
+    const { session: s1 } = await resolveSession('ag-1', 'mg-1', 'thread-1', 'per-thread');
+    const { session: s2 } = await resolveSession('ag-1', 'mg-1', 'thread-2', 'per-thread');
     expect(s1.id).not.toBe(s2.id);
   });
 
-  it('should reuse session for same thread', () => {
-    const { session: s1 } = resolveSession('ag-1', 'mg-1', 'thread-1', 'per-thread');
-    const { session: s2, created } = resolveSession('ag-1', 'mg-1', 'thread-1', 'per-thread');
+  it('should reuse session for same thread', async () => {
+    const { session: s1 } = await resolveSession('ag-1', 'mg-1', 'thread-1', 'per-thread');
+    const { session: s2, created } = await resolveSession('ag-1', 'mg-1', 'thread-1', 'per-thread');
     expect(created).toBe(false);
     expect(s2.id).toBe(s1.id);
   });
 
-  it('should write message to inbound DB', () => {
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+  it('should write message to inbound DB', async () => {
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
 
     writeSessionMessage('ag-1', session.id, {
       id: 'msg-1',
@@ -303,9 +328,11 @@ describe('session manager', () => {
     expect(JSON.parse(rows[0].content).text).toBe('Hello');
   });
 
-  it('should update last_active on message write', () => {
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
-    expect(getSession(session.id)!.last_active).toBeNull();
+  it('should update last_active on message write', async () => {
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
+    // Give the async updateSession fire-and-forget a tick to settle
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await getSession(session.id))!.last_active).toBeNull();
 
     writeSessionMessage('ag-1', session.id, {
       id: 'msg-1',
@@ -314,15 +341,17 @@ describe('session manager', () => {
       content: JSON.stringify({ text: 'hi' }),
     });
 
-    expect(getSession(session.id)!.last_active).not.toBeNull();
+    // Give the async updateSession fire-and-forget a tick to settle
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await getSession(session.id))!.last_active).not.toBeNull();
   });
 
-  it('should refuse path-traversal in attachment filenames', () => {
+  it('should refuse path-traversal in attachment filenames', async () => {
     // Regression: attachment.name comes from untrusted senders (E2EE-protected
     // chat platforms can't sanitize it server-side). Without the guard, a
     // `../../../tmp/pwned` filename escapes the inbox dir and writes anywhere
     // the host process can reach.
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
     const inboxBase = path.join(sessionDir('ag-1', session.id), 'inbox');
     const escapeTarget = path.join('/tmp', 'nanoclaw-traversal-canary');
     if (fs.existsSync(escapeTarget)) fs.rmSync(escapeTarget);
@@ -356,8 +385,8 @@ describe('session manager', () => {
 });
 
 describe('router', () => {
-  beforeEach(() => {
-    createAgentGroup({
+  beforeEach(async () => {
+    await createAgentGroup({
       id: 'ag-1',
       name: 'Test Agent',
       folder: 'test-agent',
@@ -366,7 +395,7 @@ describe('router', () => {
     });
     // Use 'public' policy so the router tests exercise routing, not the
     // access gate. Dedicated access-gate tests live with the access module.
-    createMessagingGroup({
+    await createMessagingGroup({
       id: 'mg-1',
       channel_type: 'discord',
       platform_id: 'chan-123',
@@ -375,7 +404,7 @@ describe('router', () => {
       unknown_sender_policy: 'public',
       created_at: now(),
     });
-    createMessagingGroupAgent({
+    await createMessagingGroupAgent({
       id: 'mga-1',
       messaging_group_id: 'mg-1',
       agent_group_id: 'ag-1',
@@ -408,7 +437,7 @@ describe('router', () => {
     await routeInbound(event);
 
     // Verify session was created
-    const session = findSession('mg-1', null);
+    const session = await findSession('mg-1', null);
     expect(session).toBeDefined();
 
     // Verify message was written to inbound DB
@@ -425,10 +454,6 @@ describe('router', () => {
   });
 
   it('auto-creates messaging group only when the bot is addressed (mention/DM)', async () => {
-    // The router's no-mg branch is escalation-gated: plain chatter on an
-    // unknown channel stays silent (no DB writes) so a bot that sits in
-    // many unwired channels doesn't bloat messaging_groups. Only explicit
-    // mentions and DMs trigger auto-create.
     const { routeInbound } = await import('./router.js');
     const { getMessagingGroupByPlatform } = await import('./db/messaging-groups.js');
 
@@ -444,7 +469,7 @@ describe('router', () => {
         timestamp: now(),
       },
     });
-    expect(getMessagingGroupByPlatform('slack', 'C-PLAIN')).toBeUndefined();
+    expect(await getMessagingGroupByPlatform('slack', 'C-PLAIN')).toBeUndefined();
 
     // Mention on unknown channel — SHOULD auto-create (next step: channel-registration flow).
     await routeInbound({
@@ -459,7 +484,7 @@ describe('router', () => {
         isMention: true,
       },
     });
-    expect(getMessagingGroupByPlatform('slack', 'C-MENTIONED')).toBeDefined();
+    expect(await getMessagingGroupByPlatform('slack', 'C-MENTIONED')).toBeDefined();
   });
 
   it('should route multiple messages to the same session', async () => {
@@ -485,7 +510,7 @@ describe('router', () => {
     });
 
     // Both should be in the same session
-    const session = findSession('mg-1', null);
+    const session = await findSession('mg-1', null);
     const dbPath = inboundDbPath('ag-1', session!.id);
     const db = new Database(dbPath);
     const rows = db.prepare('SELECT * FROM messages_in ORDER BY timestamp').all();
@@ -500,14 +525,14 @@ describe('router', () => {
     (wakeContainer as unknown as ReturnType<typeof vi.fn>).mockClear();
 
     // Wire a second agent to the same messaging group.
-    createAgentGroup({
+    await createAgentGroup({
       id: 'ag-2',
       name: 'Secondary Agent',
       folder: 'secondary-agent',
       agent_provider: null,
       created_at: now(),
     });
-    createMessagingGroupAgent({
+    await createMessagingGroupAgent({
       id: 'mga-2',
       messaging_group_id: 'mg-1',
       agent_group_id: 'ag-2',
@@ -531,8 +556,8 @@ describe('router', () => {
     expect(wakeContainer).toHaveBeenCalledTimes(2);
 
     const { getSessionsByAgentGroup } = await import('./db/sessions.js');
-    expect(getSessionsByAgentGroup('ag-1')).toHaveLength(1);
-    expect(getSessionsByAgentGroup('ag-2')).toHaveLength(1);
+    expect(await getSessionsByAgentGroup('ag-1')).toHaveLength(1);
+    expect(await getSessionsByAgentGroup('ag-2')).toHaveLength(1);
   });
 
   it('accumulates without waking when engage fails + ignored_message_policy=accumulate', async () => {
@@ -543,7 +568,7 @@ describe('router', () => {
     // Replace the seed row with a mention-only wiring whose accumulate
     // policy should store context even when the message doesn't mention us.
     const { updateMessagingGroupAgent } = await import('./db/messaging-groups.js');
-    updateMessagingGroupAgent('mga-1', {
+    await updateMessagingGroupAgent('mga-1', {
       engage_mode: 'mention',
       ignored_message_policy: 'accumulate',
     });
@@ -562,7 +587,7 @@ describe('router', () => {
 
     expect(wakeContainer).not.toHaveBeenCalled();
 
-    const session = findSession('mg-1', null);
+    const session = await findSession('mg-1', null);
     expect(session).toBeDefined();
     const db = new Database(inboundDbPath('ag-1', session!.id));
     const rows = db.prepare('SELECT id, trigger FROM messages_in').all() as Array<{
@@ -580,7 +605,7 @@ describe('router', () => {
     (wakeContainer as unknown as ReturnType<typeof vi.fn>).mockClear();
 
     const { updateMessagingGroupAgent } = await import('./db/messaging-groups.js');
-    updateMessagingGroupAgent('mga-1', { engage_mode: 'mention' }); // drop is the default
+    await updateMessagingGroupAgent('mga-1', { engage_mode: 'mention' }); // drop is the default
 
     await routeInbound({
       channelType: 'discord',
@@ -591,20 +616,20 @@ describe('router', () => {
 
     expect(wakeContainer).not.toHaveBeenCalled();
     // No session should have been created for this agent.
-    expect(findSession('mg-1', null)).toBeUndefined();
+    expect(await findSession('mg-1', null)).toBeUndefined();
   });
 });
 
 describe('delivery', () => {
-  it('should detect undelivered messages in outbound DB', () => {
-    createAgentGroup({
+  it('should detect undelivered messages in outbound DB', async () => {
+    await createAgentGroup({
       id: 'ag-1',
       name: 'Agent',
       folder: 'agent',
       agent_provider: null,
       created_at: now(),
     });
-    createMessagingGroup({
+    await createMessagingGroup({
       id: 'mg-test',
       channel_type: 'discord',
       platform_id: 'chan-test',
@@ -614,7 +639,7 @@ describe('delivery', () => {
       created_at: now(),
     });
 
-    const { session } = resolveSession('ag-1', 'mg-test', null, 'shared');
+    const { session } = await resolveSession('ag-1', 'mg-test', null, 'shared');
 
     // Write a response to the outbound DB (simulating what the agent-runner does)
     const dbPath = outboundDbPath('ag-1', session.id);

@@ -72,10 +72,11 @@ export function resolveOneCLIApproval(approvalId: string, selectedOption: string
   clearTimeout(state.timer);
 
   const decision: Decision = selectedOption === 'approve' ? 'approve' : 'deny';
-  updatePendingApprovalStatus(approvalId, decision === 'approve' ? 'approved' : 'rejected');
+  // Fire-and-forget: DB cleanup is non-critical, resolution continues immediately
+  void updatePendingApprovalStatus(approvalId, decision === 'approve' ? 'approved' : 'rejected');
   // Card is auto-edited to "✅ <option>" by chat-sdk-bridge's onAction handler,
   // so we don't need to deliver an edit here.
-  deletePendingApproval(approvalId);
+  void deletePendingApproval(approvalId);
 
   state.resolve(decision);
   log.info('OneCLI approval resolved', { approvalId, decision });
@@ -116,9 +117,9 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
   // Originating agent group is carried on the request via OneCLI's agent
   // identifier (set by container-runner.ts to agentGroup.id). Use it as
   // the scope for approver selection: admin @ group → global admin → owner.
-  const originGroup = request.agent.externalId ? getAgentGroup(request.agent.externalId) : undefined;
+  const originGroup = request.agent.externalId ? await getAgentGroup(request.agent.externalId) : undefined;
   const agentGroupId = originGroup?.id ?? null;
-  const approvers = pickApprover(agentGroupId);
+  const approvers = await pickApprover(agentGroupId);
   if (approvers.length === 0) {
     log.warn('OneCLI approval auto-denied: no eligible approver', {
       id: request.id,
@@ -170,7 +171,7 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
     return 'deny';
   }
 
-  createPendingApproval({
+  await createPendingApproval({
     approval_id: approvalId,
     session_id: null,
     request_id: request.id,
@@ -215,13 +216,13 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
 }
 
 async function expireApproval(approvalId: string, reason: string): Promise<void> {
-  const rows = getPendingApprovalsByAction(ONECLI_ACTION).filter((r) => r.approval_id === approvalId);
+  const rows = (await getPendingApprovalsByAction(ONECLI_ACTION)).filter((r) => r.approval_id === approvalId);
   const row = rows[0];
   if (!row) return;
 
-  updatePendingApprovalStatus(approvalId, 'expired');
+  await updatePendingApprovalStatus(approvalId, 'expired');
   await editCardExpired(row, reason);
-  deletePendingApproval(approvalId);
+  await deletePendingApproval(approvalId);
   log.info('OneCLI approval expired', { approvalId, reason });
 }
 
@@ -245,12 +246,12 @@ async function editCardExpired(row: PendingApproval, reason: string): Promise<vo
 }
 
 async function sweepStaleApprovals(): Promise<void> {
-  const rows = getPendingApprovalsByAction(ONECLI_ACTION);
+  const rows = await getPendingApprovalsByAction(ONECLI_ACTION);
   if (rows.length === 0) return;
   log.info('Sweeping stale OneCLI approvals from previous process', { count: rows.length });
   for (const row of rows) {
     await editCardExpired(row, 'host restarted');
-    deletePendingApproval(row.approval_id);
+    await deletePendingApproval(row.approval_id);
   }
 }
 

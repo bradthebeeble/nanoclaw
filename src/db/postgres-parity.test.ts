@@ -67,46 +67,107 @@ const EXPECTED_TABLES = [
 // Only validates the central-DB tables (session DBs are on SQLite — out of scope).
 const TABLE_COLUMNS: Record<string, string[]> = {
   agent_groups: ['id', 'name', 'folder', 'agent_provider', 'created_at'],
-  messaging_groups: ['id', 'channel_type', 'platform_id', 'name', 'is_group', 'unknown_sender_policy', 'created_at', 'denied_at'],
+  messaging_groups: [
+    'id',
+    'channel_type',
+    'platform_id',
+    'name',
+    'is_group',
+    'unknown_sender_policy',
+    'created_at',
+    'denied_at',
+  ],
   messaging_group_agents: [
-    'id', 'messaging_group_id', 'agent_group_id',
-    'engage_mode', 'engage_pattern', 'sender_scope', 'ignored_message_policy',
-    'session_mode', 'priority', 'created_at',
+    'id',
+    'messaging_group_id',
+    'agent_group_id',
+    'engage_mode',
+    'engage_pattern',
+    'sender_scope',
+    'ignored_message_policy',
+    'session_mode',
+    'priority',
+    'created_at',
   ],
   users: ['id', 'kind', 'display_name', 'created_at'],
   user_roles: ['user_id', 'role', 'agent_group_id', 'granted_by', 'granted_at'],
   agent_group_members: ['user_id', 'agent_group_id', 'added_by', 'added_at'],
   user_dms: ['user_id', 'channel_type', 'messaging_group_id', 'resolved_at'],
   sessions: [
-    'id', 'agent_group_id', 'messaging_group_id', 'thread_id', 'agent_provider',
-    'status', 'container_status', 'last_active', 'created_at',
+    'id',
+    'agent_group_id',
+    'messaging_group_id',
+    'thread_id',
+    'agent_provider',
+    'status',
+    'container_status',
+    'last_active',
+    'created_at',
   ],
   pending_questions: [
-    'question_id', 'session_id', 'message_out_id', 'platform_id', 'channel_type',
-    'thread_id', 'title', 'options_json', 'created_at',
+    'question_id',
+    'session_id',
+    'message_out_id',
+    'platform_id',
+    'channel_type',
+    'thread_id',
+    'title',
+    'options_json',
+    'created_at',
   ],
   pending_sender_approvals: [
-    'id', 'messaging_group_id', 'agent_group_id', 'sender_identity',
-    'sender_name', 'original_message', 'approver_user_id', 'created_at',
-    'title', 'options_json',
+    'id',
+    'messaging_group_id',
+    'agent_group_id',
+    'sender_identity',
+    'sender_name',
+    'original_message',
+    'approver_user_id',
+    'created_at',
+    'title',
+    'options_json',
   ],
   chat_sdk_kv: ['key', 'value', 'expires_at'],
   chat_sdk_subscriptions: ['thread_id', 'subscribed_at'],
   chat_sdk_locks: ['thread_id', 'token', 'expires_at'],
   chat_sdk_lists: ['key', 'idx', 'value', 'expires_at'],
   pending_approvals: [
-    'approval_id', 'session_id', 'request_id', 'action', 'payload', 'created_at',
-    'agent_group_id', 'channel_type', 'platform_id', 'platform_message_id', 'expires_at', 'status',
-    'title', 'options_json',
+    'approval_id',
+    'session_id',
+    'request_id',
+    'action',
+    'payload',
+    'created_at',
+    'agent_group_id',
+    'channel_type',
+    'platform_id',
+    'platform_message_id',
+    'expires_at',
+    'status',
+    'title',
+    'options_json',
   ],
   agent_destinations: ['agent_group_id', 'local_name', 'target_type', 'target_id', 'created_at'],
   unregistered_senders: [
-    'channel_type', 'platform_id', 'user_id', 'sender_name', 'reason',
-    'messaging_group_id', 'agent_group_id', 'message_count', 'first_seen', 'last_seen',
+    'channel_type',
+    'platform_id',
+    'user_id',
+    'sender_name',
+    'reason',
+    'messaging_group_id',
+    'agent_group_id',
+    'message_count',
+    'first_seen',
+    'last_seen',
   ],
   pending_channel_approvals: [
-    'messaging_group_id', 'agent_group_id', 'original_message', 'approver_user_id', 'created_at',
-    'title', 'options_json',
+    'messaging_group_id',
+    'agent_group_id',
+    'original_message',
+    'approver_user_id',
+    'created_at',
+    'title',
+    'options_json',
   ],
 };
 
@@ -143,10 +204,7 @@ afterAll(async () => {
 describe('P1: every upstream table exists in Postgres after migration', () => {
   for (const tableName of EXPECTED_TABLES) {
     it(`table "${tableName}" exists`, async () => {
-      const result = await pool.query(
-        `SELECT to_regclass($1) AS found`,
-        [`public.${tableName}`],
-      );
+      const result = await pool.query(`SELECT to_regclass($1) AS found`, [`public.${tableName}`]);
       expect(result.rows[0].found).not.toBeNull();
     });
   }
@@ -176,9 +234,7 @@ describe('P2: column inventory matches upstream SQLite schema', () => {
 
 describe('P3: upstream migration names backfilled in schema_version', () => {
   it('schema_version contains all 11 upstream migration names', async () => {
-    const result = await pool.query<{ name: string }>(
-      `SELECT name FROM schema_version ORDER BY name`,
-    );
+    const result = await pool.query<{ name: string }>(`SELECT name FROM schema_version ORDER BY name`);
     const names = result.rows.map((r) => r.name);
 
     for (const expectedName of UPSTREAM_MIGRATION_NAMES) {

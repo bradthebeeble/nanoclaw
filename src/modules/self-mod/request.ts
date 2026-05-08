@@ -18,7 +18,7 @@ import type { Session } from '../../types.js';
 import { notifyAgent, requestApproval } from '../approvals/index.js';
 
 export async function handleInstallPackages(content: Record<string, unknown>, session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) {
     notifyAgent(session, 'install_packages failed: agent group not found.');
     return;
@@ -64,7 +64,7 @@ export async function handleInstallPackages(content: Record<string, unknown>, se
 }
 
 export async function handleAddMcpServer(content: Record<string, unknown>, session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) {
     notifyAgent(session, 'add_mcp_server failed: agent group not found.');
     return;
