@@ -84,12 +84,7 @@ export async function getRunningSessions(): Promise<Session[]> {
 // TypeScript's Partial<Pick<...>> is erased at runtime; without this Set, any caller
 // routing untrusted input through updateSession would splice arbitrary keys directly
 // into the UPDATE column list (SQL injection).
-const ALLOWED_SESSION_COLUMNS = new Set<string>([
-  'status',
-  'container_status',
-  'last_active',
-  'agent_provider',
-]);
+const ALLOWED_SESSION_COLUMNS = new Set<string>(['status', 'container_status', 'last_active', 'agent_provider']);
 
 export async function updateSession(
   id: string,
