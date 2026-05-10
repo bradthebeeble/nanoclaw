@@ -60,10 +60,12 @@ RUN apk add --no-cache docker-cli
 
 # Create docker group with gid 999 to match the DinD socket GID convention.
 # adduser with uid 1000 and primary group docker (gid 999).
-# alpine 3.x ships with a `ping` group at GID 999; remove it first so the docker
-# group can claim that GID. (delgroup is a no-op if the group doesn't exist on
-# future alpine versions that drop the ping group.)
-RUN (delgroup ping 2>/dev/null || true) && \
+# node:20-alpine ships with: a `ping` group at GID 999, and a `node` user+group at UID/GID 1000.
+# Remove both before creating our own — they're not used by the NanoClaw runtime.
+# (delgroup/deluser are no-ops if the entity doesn't exist on future alpine bases.)
+RUN (deluser node 2>/dev/null || true) && \
+    (delgroup node 2>/dev/null || true) && \
+    (delgroup ping 2>/dev/null || true) && \
     addgroup -g 999 docker && \
     adduser -D -u 1000 -G docker nanoclaw
 
