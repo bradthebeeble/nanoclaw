@@ -10,8 +10,18 @@
     "declaration": false,
     "sourceMap": false,
     "outDir": "./dist",
-    "rootDir": "."
+    "rootDir": "../..",
+    "composite": false
   },
-  "include": ["*.ts"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "include": [
+    "index.ts",
+    "bridge.ts",
+    "server.ts",
+    "types.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts"
+  ]
 }
