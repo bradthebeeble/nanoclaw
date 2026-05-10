@@ -83,8 +83,10 @@ COPY --from=build /build/runtimes/k8s4claw-adapter/package.json ./runtimes/k8s4c
 COPY --from=build /build/runtimes/k8s4claw-adapter/package-lock.json ./runtimes/k8s4claw-adapter/
 
 # Enable corepack and install production dependencies only.
+# --ignore-scripts prevents husky (devDep) from running its prepare hook
+# in the production-only install context where husky is not present.
 RUN corepack enable && \
-    pnpm install --frozen-lockfile --prod
+    pnpm install --frozen-lockfile --prod --ignore-scripts
 
 # Install adapter production dependencies using the lockfile created in the build stage.
 WORKDIR /app/runtimes/k8s4claw-adapter
